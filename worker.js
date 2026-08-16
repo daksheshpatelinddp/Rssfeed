@@ -143,29 +143,59 @@ export default {
     }
 
     try {
-      const response = await fetch(feedUrl.toString(), {
-        method: "GET",
-        redirect: "follow",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; MarketFeed RSS Reader/1.0)",
-          "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
+      let response = null;
+      let lastError = "";
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 12000);
+
+          try {
+            response = await fetch(feedUrl.toString(), {
+              method: "GET",
+              redirect: "follow",
+              headers: {
+                "User-Agent": "Mozilla/5.0 (compatible; MarketFeed RSS Reader/1.0)",
+                "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+                "Accept-Language": "en-IN,en;q=0.9"
+              },
+              signal: controller.signal
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+
+          if (response.ok) break;
+
+          lastError = `Source returned HTTP ${response.status}`;
+
+          if (![408,425,429,500,502,503,504].includes(response.status)) break;
+        } catch (e) {
+          lastError = e?.name==="AbortError" ? "Source request timed out" : (e?.message||"Source request failed");
         }
-      });
+
+        if (attempt < 2) await new Promise(r=>setTimeout(r,600*(attempt+1)));
+      }
+
+      if (!response) {
+        return json({ok:false,error:`RSS source unavailable: ${lastError}`},502);
+      }
 
       if (!response.ok) {
-        return json({ok: false, error: `Source returned HTTP ${response.status}`}, 502);
+        return json({ok:false,error:lastError||`RSS source returned HTTP ${response.status}`},502);
       }
 
       const xml = await response.text();
 
       if (!xml || xml.length < 20) {
-        return json({ok: false, error: "RSS source returned an empty response"}, 502);
+        return json({ok:false,error:"RSS source returned an empty response"},502);
       }
 
       const items = parseFeed(xml);
 
       if (!items.length) {
-        return json({ok: false, error: "The URL did not contain a readable RSS or Atom feed"}, 422);
+        return json({ok:false,error:"The URL did not contain a readable RSS or Atom feed"},422);
       }
 
       return json({
