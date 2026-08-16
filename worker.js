@@ -105,40 +105,92 @@ function parseFeed(xml) {
 }
 
 
-async function fetchUpstream(url) {
-  const headers = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/151.0 Mobile Safari/537.36",
-    "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-    "Accept-Language": "en-IN,en;q=0.9"
-  };
-  let lastError="";
-  for(let attempt=0;attempt<3;attempt++){
-    try{
-      const controller=new AbortController();
-      const timer=setTimeout(()=>controller.abort(),15000);
-      try{
-        const r=await fetch(url,{method:"GET",redirect:"follow",headers,signal:controller.signal});
-        if(r.ok)return r;
-        lastError=`Source returned HTTP ${r.status}`;
-        if(![408,425,429,500,502,503,504].includes(r.status))return r;
-      }finally{clearTimeout(timer)}
-    }catch(e){
-      lastError=e?.name==="AbortError"?"Source request timed out":(e?.message||"Source request failed");
+async function fetchNewsData(query, env) {
+  if (!env?.NEWSDATA_API_KEY)
+    throw new Error("NewsData API key is not configured in Cloudflare Worker Secrets");
+
+  const api=new URL("https://newsdata.io/api/1/latest");
+  api.searchParams.set("apikey",env.NEWSDATA_API_KEY);
+  api.searchParams.set("q",query);
+  api.searchParams.set("language","en");
+  api.searchParams.set("country","in");
+  api.searchParams.set("size","10");
+  api.searchParams.set("removeduplicate","1");
+
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),15000);
+  try{
+    const response=await fetch(api.toString(),{
+      method:"GET",
+      headers:{"Accept":"application/json","User-Agent":"MarketFeed/7.0"},
+      signal:controller.signal
+    });
+    const text=await response.text();
+    let data=null;
+    try{data=JSON.parse(text)}catch(_){}
+    if(!response.ok){
+      throw new Error(data?.results?.message||data?.message||`NewsData HTTP ${response.status}`);
     }
-    if(attempt<2)await new Promise(r=>setTimeout(r,1500*(attempt+1)));
-  }
-  return new Response("",{status:503,statusText:lastError});
+    if(data?.status==="error"){
+      throw new Error(data?.results?.message||data?.message||"NewsData API returned an error");
+    }
+    return data;
+  }finally{clearTimeout(timer)}
+}
+
+function normalizeNewsData(data){
+  const results=Array.isArray(data?.results)?data.results:[];
+  return results.map((x,i)=>({
+    id:x.article_id||x.link||`${x.title||"story"}-${x.pubDate||i}`,
+    title:cleanText(x.title||""),
+    description:cleanText(x.description||x.content||""),
+    url:x.link||"",
+    date:x.pubDate||x.pubDateTZ||new Date().toISOString()
+  })).filter(x=>x.title||x.url);
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const requestUrl=new URL(request.url);
 
     if(request.method==="OPTIONS")
       return new Response(null,{status:204,headers:CORS});
 
     if(requestUrl.pathname==="/")
-      return json({ok:true,service:"MarketFeed RSS Proxy",version:"6",endpoint:"/rss?url=RSS_URL"});
+      return json({
+        ok:true,
+        service:"MarketFeed RSS Proxy",
+        version:"7",
+        endpoints:["/rss?url=RSS_URL","/news?q=KEYWORD"]
+      });
+
+    if(requestUrl.pathname==="/news"){
+      const query=(requestUrl.searchParams.get("q")||"").trim();
+      if(!query)return json({ok:false,error:"Missing q parameter"},400);
+      if(query.length>100)return json({ok:false,error:"Keyword search is limited to 100 characters on the current plan"},400);
+
+      try{
+        const cache=caches.default;
+        const cacheKey=new Request(requestUrl.toString(),request);
+        const cached=await cache.match(cacheKey);
+        if(cached)return cached;
+
+        const data=await fetchNewsData(query,env);
+        const items=normalizeNewsData(data);
+
+        const result=json({
+          ok:true,
+          source:"NewsData.io",
+          count:items.length,
+          items
+        },200,{"Cache-Control":"public, max-age=120, s-maxage=120"});
+
+        await cache.put(cacheKey,result.clone());
+        return result;
+      }catch(error){
+        return json({ok:false,error:error?.message||"NewsData request failed"},502);
+      }
+    }
 
     if(requestUrl.pathname!=="/rss")
       return json({ok:false,error:"Endpoint not found"},404);
@@ -165,17 +217,18 @@ export default {
         return json({ok:false,error:`RSS source returned HTTP ${response.status}`,source:feedUrl.hostname},502);
 
       const xml=await response.text();
-
       if(!xml||xml.length<20)
-        return json({ok:false,error:"RSS source returned an empty response",source:feedUrl.hostname},502);
+        return json({ok:false,error:"RSS source returned an empty response"},502);
 
       const items=parseFeed(xml);
-
       if(!items.length)
         return json({ok:false,error:"The URL did not contain a readable RSS or Atom feed",source:feedUrl.hostname},422);
 
       const result=json({
-        ok:true,source:feedUrl.toString(),count:items.length,items:items.slice(0,100)
+        ok:true,
+        source:feedUrl.toString(),
+        count:items.length,
+        items:items.slice(0,100)
       },200,{"Cache-Control":"public, max-age=120, s-maxage=120"});
 
       await cache.put(cacheKey,result.clone());
