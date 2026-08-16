@@ -104,109 +104,84 @@ function parseFeed(xml) {
   return [];
 }
 
+
+async function fetchUpstream(url) {
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/151.0 Mobile Safari/537.36",
+    "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+    "Accept-Language": "en-IN,en;q=0.9"
+  };
+  let lastError="";
+  for(let attempt=0;attempt<3;attempt++){
+    try{
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),15000);
+      try{
+        const r=await fetch(url,{method:"GET",redirect:"follow",headers,signal:controller.signal});
+        if(r.ok)return r;
+        lastError=`Source returned HTTP ${r.status}`;
+        if(![408,425,429,500,502,503,504].includes(r.status))return r;
+      }finally{clearTimeout(timer)}
+    }catch(e){
+      lastError=e?.name==="AbortError"?"Source request timed out":(e?.message||"Source request failed");
+    }
+    if(attempt<2)await new Promise(r=>setTimeout(r,1500*(attempt+1)));
+  }
+  return new Response("",{status:503,statusText:lastError});
+}
+
 export default {
   async fetch(request) {
-    const requestUrl = new URL(request.url);
+    const requestUrl=new URL(request.url);
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, {status: 204, headers: CORS});
-    }
+    if(request.method==="OPTIONS")
+      return new Response(null,{status:204,headers:CORS});
 
-    if (requestUrl.pathname === "/") {
-      return json({
-        ok: true,
-        service: "MarketFeed RSS Proxy",
-        endpoint: "/rss?url=RSS_URL"
-      });
-    }
+    if(requestUrl.pathname==="/")
+      return json({ok:true,service:"MarketFeed RSS Proxy",version:"6",endpoint:"/rss?url=RSS_URL"});
 
-    if (requestUrl.pathname !== "/rss") {
-      return json({ok: false, error: "Endpoint not found"}, 404);
-    }
+    if(requestUrl.pathname!=="/rss")
+      return json({ok:false,error:"Endpoint not found"},404);
 
-    const source = requestUrl.searchParams.get("url");
-
-    if (!source) {
-      return json({ok: false, error: "Missing url parameter"}, 400);
-    }
+    const source=requestUrl.searchParams.get("url");
+    if(!source)return json({ok:false,error:"Missing url parameter"},400);
 
     let feedUrl;
+    try{feedUrl=new URL(source)}
+    catch{return json({ok:false,error:"Invalid RSS URL"},400)}
 
-    try {
-      feedUrl = new URL(source);
-    } catch {
-      return json({ok: false, error: "Invalid RSS URL"}, 400);
-    }
+    if(!["http:","https:"].includes(feedUrl.protocol))
+      return json({ok:false,error:"Only HTTP and HTTPS URLs are allowed"},400);
 
-    if (!["http:", "https:"].includes(feedUrl.protocol)) {
-      return json({ok: false, error: "Only HTTP and HTTPS URLs are allowed"}, 400);
-    }
+    const cache=caches.default;
+    const cacheKey=new Request(requestUrl.toString(),request);
+    const cached=await cache.match(cacheKey);
+    if(cached)return cached;
 
-    try {
-      let response = null;
-      let lastError = "";
+    try{
+      const response=await fetchUpstream(feedUrl.toString());
 
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 12000);
+      if(!response.ok)
+        return json({ok:false,error:`RSS source returned HTTP ${response.status}`,source:feedUrl.hostname},502);
 
-          try {
-            response = await fetch(feedUrl.toString(), {
-              method: "GET",
-              redirect: "follow",
-              headers: {
-                "User-Agent": "Mozilla/5.0 (compatible; MarketFeed RSS Reader/1.0)",
-                "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-                "Accept-Language": "en-IN,en;q=0.9"
-              },
-              signal: controller.signal
-            });
-          } finally {
-            clearTimeout(timer);
-          }
+      const xml=await response.text();
 
-          if (response.ok) break;
+      if(!xml||xml.length<20)
+        return json({ok:false,error:"RSS source returned an empty response",source:feedUrl.hostname},502);
 
-          lastError = `Source returned HTTP ${response.status}`;
+      const items=parseFeed(xml);
 
-          if (![408,425,429,500,502,503,504].includes(response.status)) break;
-        } catch (e) {
-          lastError = e?.name==="AbortError" ? "Source request timed out" : (e?.message||"Source request failed");
-        }
+      if(!items.length)
+        return json({ok:false,error:"The URL did not contain a readable RSS or Atom feed",source:feedUrl.hostname},422);
 
-        if (attempt < 2) await new Promise(r=>setTimeout(r,600*(attempt+1)));
-      }
+      const result=json({
+        ok:true,source:feedUrl.toString(),count:items.length,items:items.slice(0,100)
+      },200,{"Cache-Control":"public, max-age=120, s-maxage=120"});
 
-      if (!response) {
-        return json({ok:false,error:`RSS source unavailable: ${lastError}`},502);
-      }
-
-      if (!response.ok) {
-        return json({ok:false,error:lastError||`RSS source returned HTTP ${response.status}`},502);
-      }
-
-      const xml = await response.text();
-
-      if (!xml || xml.length < 20) {
-        return json({ok:false,error:"RSS source returned an empty response"},502);
-      }
-
-      const items = parseFeed(xml);
-
-      if (!items.length) {
-        return json({ok:false,error:"The URL did not contain a readable RSS or Atom feed"},422);
-      }
-
-      return json({
-        ok: true,
-        items: items.slice(0, 100)
-      });
-    } catch (error) {
-      return json({
-        ok: false,
-        error: error?.message || "Failed to fetch RSS feed"
-      }, 502);
+      await cache.put(cacheKey,result.clone());
+      return result;
+    }catch(error){
+      return json({ok:false,error:error?.message||"Failed to fetch RSS feed",source:feedUrl.hostname},502);
     }
   }
 };
