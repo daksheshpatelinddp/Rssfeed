@@ -111,38 +111,41 @@ async function fetchUpstream(url){
 }
 
 async function fetchNewsData(query,env){
-  if(!env?.NEWSDATA_API_KEY)throw new Error("NewsData API key is not configured in Cloudflare Worker Secrets");
-  const api=new URL("https://newsdata.io/api/1/latest");
-  api.searchParams.set("apikey",env.NEWSDATA_API_KEY);
-  api.searchParams.set("q",query);
-  api.searchParams.set("language","en");
-  api.searchParams.set("country","in");
-  api.searchParams.set("size","10");
+  const url=new URL("https://news.google.com/rss/search");
+  url.searchParams.set("q",query);
+  url.searchParams.set("hl","en-IN");
+  url.searchParams.set("gl","IN");
+  url.searchParams.set("ceid","IN:en");
 
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),15000);
   try{
-    const response=await fetch(api.toString(),{
+    const response=await fetch(url.toString(),{
       method:"GET",
-      headers:{"Accept":"application/json","User-Agent":"MarketFeed/7.0"},
+      redirect:"follow",
+      headers:{
+        "User-Agent":"Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/151.0 Mobile Safari/537.36",
+        "Accept":"application/rss+xml, application/xml, text/xml, */*",
+        "Accept-Language":"en-IN,en;q=0.9"
+      },
       signal:controller.signal
     });
-    const text=await response.text();
-    let data=null;try{data=JSON.parse(text)}catch(_){}
-    if(!response.ok)throw new Error(data?.results?.message||data?.message||`NewsData HTTP ${response.status}`);
-    if(data?.status==="error")throw new Error(data?.results?.message||data?.message||"NewsData API returned an error");
-    return data;
+    if(!response.ok)throw new Error(`Google News HTTP ${response.status}`);
+    const xml=await response.text();
+    if(!xml||xml.length<20)throw new Error("Google News returned an empty response");
+    const items=parseFeed(xml);
+    if(!items.length)throw new Error("Google News returned no readable stories");
+    return {results:items};
   }finally{clearTimeout(timer)}
 }
-
 function normalizeNewsData(data){
   const results=Array.isArray(data?.results)?data.results:[];
   return results.map((x,i)=>({
-    id:x.article_id||x.link||`${x.title||"story"}-${x.pubDate||i}`,
+    id:x.article_id||x.id||x.link||`${x.title||"story"}-${x.date||i}`,
     title:cleanText(x.title||""),
     description:cleanText(x.description||x.content||""),
-    url:x.link||"",
-    date:x.pubDate||x.pubDateTZ||new Date().toISOString()
+    url:x.url||x.link||"",
+    date:x.date||x.pubDate||new Date().toISOString()
   })).filter(x=>x.title||x.url);
 }
 
@@ -153,7 +156,7 @@ export default{
     if(request.method==="OPTIONS")return new Response(null,{status:204,headers:CORS});
 
     if(requestUrl.pathname==="/")return json({
-      ok:true,service:"MarketFeed RSS Proxy",version:"7-fixed",
+      ok:true,service:"MarketFeed RSS Proxy",version:"7-fixed-rss",
       endpoints:["/rss?url=RSS_URL","/news?q=KEYWORD"]
     });
 
