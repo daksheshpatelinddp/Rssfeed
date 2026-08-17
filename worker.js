@@ -5,6 +5,8 @@ const CORS = {
   "Cache-Control": "no-store"
 };
 
+const VERSION = "7-news-fallback-fixed";
+
 function json(data, status = 200, extra = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -70,6 +72,15 @@ function parseRSS(xml) {
     let link = decodeXml(getTag(block, "link"));
     if (!link) link = getAttribute(block, "link", "href");
     if (!link) link = cleanText(getTag(block, "guid"));
+
+    // Bing News may return a redirect URL. Extract the real article URL.
+    try {
+      const u = new URL(link);
+      if (u.hostname === "www.bing.com" && u.pathname === "/news/apiclick.aspx") {
+        const real = u.searchParams.get("url");
+        if (real) link = real;
+      }
+    } catch (_) {}
 
     const date =
       getTag(block, "pubDate") ||
@@ -141,7 +152,7 @@ function requestHeaders() {
   };
 }
 
-async function fetchText(url, timeoutMs = 20000) {
+async function fetchText(url, timeoutMs = 15000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -166,9 +177,10 @@ async function fetchText(url, timeoutMs = 20000) {
     return {
       ok: false,
       status: 0,
-      statusText: error?.name === "AbortError"
-        ? "Request timed out"
-        : (error?.message || "Network request failed"),
+      statusText:
+        error?.name === "AbortError"
+          ? "Request timed out"
+          : (error?.message || "Network request failed"),
       finalUrl: url,
       text: ""
     };
@@ -177,51 +189,39 @@ async function fetchText(url, timeoutMs = 20000) {
   }
 }
 
-async function fetchWithRetry(url, attempts = 3) {
-  let last = null;
-
-  for (let i = 0; i < attempts; i++) {
-    last = await fetchText(url);
-
-    if (last.ok) return last;
-
-    // Retry transient failures only.
-    if (![0, 408, 425, 429, 500, 502, 503, 504].includes(last.status)) {
-      return last;
-    }
-
-    if (i < attempts - 1) {
-      await new Promise(resolve => setTimeout(resolve, 800 * (i + 1)));
-    }
-  }
-
-  return last;
+async function fetchOnce(url) {
+  return await fetchText(url, 15000);
 }
 
-function googleNewsUrls(query) {
+function newsUrls(query) {
   const encoded = encodeURIComponent(query);
 
-  // Primary current Google News RSS search endpoint.
-  const primary = new URL("https://news.google.com/rss/search");
-  primary.searchParams.set("q", query);
-  primary.searchParams.set("hl", "en-IN");
-  primary.searchParams.set("gl", "IN");
-  primary.searchParams.set("ceid", "IN:en");
+  // Bing News RSS is used first because Google News currently returns
+  // HTTP 503 from the Cloudflare Worker edge for this deployment.
+  const bing = new URL("https://www.bing.com/news/search");
+  bing.searchParams.set("q", query);
+  bing.searchParams.set("format", "RSS");
+  bing.searchParams.set("setmkt", "en-IN");
+  bing.searchParams.set("cc", "IN");
 
-  // Compatibility endpoint used by older Google News RSS implementations.
-  const legacy =
-    `https://news.google.com/news/rss/search/section/q/${encoded}` +
-    `?hl=en-IN&gl=IN&ceid=IN:en`;
+  // Keep Google News as a fallback if Google becomes reachable again.
+  const google = new URL("https://news.google.com/rss/search");
+  google.searchParams.set("q", query);
+  google.searchParams.set("hl", "en-IN");
+  google.searchParams.set("gl", "IN");
+  google.searchParams.set("ceid", "IN:en");
 
-  return [primary.toString(), legacy];
+  return [
+    { provider: "Bing News RSS", url: bing.toString() },
+    { provider: "Google News RSS", url: google.toString() }
+  ];
 }
 
-async function fetchGoogleNews(query) {
-  const urls = googleNewsUrls(query);
-  const failures = [];
+async function fetchNews(query) {
+  const attempts = [];
 
-  for (const url of urls) {
-    const result = await fetchWithRetry(url, 2);
+  for (const candidate of newsUrls(query)) {
+    const result = await fetchOnce(candidate.url);
 
     if (result.ok) {
       const items = parseFeed(result.text);
@@ -229,31 +229,33 @@ async function fetchGoogleNews(query) {
       if (items.length) {
         return {
           ok: true,
-          source: "Google News RSS",
+          source: candidate.provider,
           sourceUrl: result.finalUrl,
-          items: items.slice(0, 100)
+          items: items.slice(0, 100),
+          attempts
         };
       }
 
-      failures.push({
-        url,
+      attempts.push({
+        provider: candidate.provider,
+        url: candidate.url,
         status: result.status,
         detail: "HTTP succeeded but no RSS/Atom items were found"
       });
-      continue;
+    } else {
+      attempts.push({
+        provider: candidate.provider,
+        url: candidate.url,
+        status: result.status,
+        detail: result.statusText
+      });
     }
-
-    failures.push({
-      url,
-      status: result.status,
-      detail: result.statusText
-    });
   }
 
   return {
     ok: false,
-    error: "Google News RSS could not be fetched",
-    attempts: failures
+    error: "No news RSS provider could be fetched",
+    attempts
   };
 }
 
@@ -285,11 +287,9 @@ export default {
       return json({
         ok: true,
         service: "MarketFeed RSS Proxy",
-        version: "7-google-news-fixed",
-        endpoints: [
-          "/rss?url=RSS_URL",
-          "/news?q=KEYWORD"
-        ]
+        version: VERSION,
+        keywordMode: "Bing News RSS with Google News fallback",
+        endpoints: ["/rss?url=RSS_URL", "/news?q=KEYWORD"]
       });
     }
 
@@ -307,16 +307,13 @@ export default {
         );
       }
 
-      const result = await fetchGoogleNews(query);
+      const result = await fetchNews(query);
 
       if (!result.ok) {
-        // Deliberately expose useful diagnostics so the MarketFeed UI
-        // does not hide the real upstream problem behind a generic 502.
         return json(
           {
             ok: false,
             error: result.error,
-            source: "Google News RSS",
             attempts: result.attempts
           },
           502
@@ -359,7 +356,7 @@ export default {
       );
     }
 
-    const result = await fetchWithRetry(feedUrl.toString(), 3);
+    const result = await fetchText(feedUrl.toString(), 20000);
 
     if (!result.ok) {
       return json(
