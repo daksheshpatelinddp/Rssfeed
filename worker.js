@@ -1,5 +1,5 @@
 /*
- * MarketFeed RSS Worker - V11
+ * MarketFeed RSS Worker - V11 BSE DIAGNOSTIC
  *
  * Sources:
  *   Google News RSS
@@ -790,10 +790,7 @@ async function fetchBSENews(
 
 
   /*
-   * Only first few pages.
-   *
-   * We don't want the Worker spending
-   * excessive time downloading BSE history.
+   * Fetch first few BSE pages.
    */
 
   for (
@@ -828,6 +825,7 @@ async function fetchBSENews(
     ) {
 
       attempts.push({
+
         date,
 
         ok:
@@ -838,6 +836,7 @@ async function fetchBSENews(
 
         detail:
           result.detail
+
       });
 
 
@@ -849,19 +848,17 @@ async function fetchBSENews(
         allRows.push(
           ...result.items
         );
+
       }
+
     }
 
-
-    /*
-     * If BSE is unavailable, don't
-     * repeatedly hammer it.
-     */
 
     const anySuccess =
       results.some(
         x => x.ok
       );
+
 
     if (
       !anySuccess
@@ -869,43 +866,59 @@ async function fetchBSENews(
 
       break;
     }
+
   }
 
 
+  /*
+   * TEMPORARY DIAGNOSTIC:
+   *
+   * Do NOT filter by keyword yet.
+   *
+   * We need to inspect the actual
+   * BSE fields first.
+   */
+
   const items =
-    const items =
-  allRows
-    .map(
-      normalizeBSE
-    )
-    .filter(
-      item =>
-        item.title ||
-        item.link
-    );
-      
+    allRows
+      .map(
+        normalizeBSE
+      )
+      .filter(
+        item =>
+          item.title ||
+          item.link
+      );
 
 
   return {
 
-  ok:
-    items.length > 0,
+    ok:
+      items.length > 0,
 
-  provider:
-    "BSE Corporate Announcements",
+    provider:
+      "BSE Corporate Announcements",
 
-  keyword,
+    keyword,
 
-  count:
-    items.length,
+    count:
+      items.length,
 
-  items,
+    items,
 
-  attempts,
+    attempts,
 
-  debugRaw:
-    allRows.slice(0, 3)
-};
+    /*
+     * Show first 3 RAW BSE records.
+     * This is temporary and will be
+     * removed after diagnosis.
+     */
+
+    debugRaw:
+      allRows.slice(0, 3)
+
+  };
+}
 
 
 /* =========================================================
@@ -946,7 +959,9 @@ async function fetchProvider(
         detail:
           "HTTP " +
           response.status
+
       };
+
     }
 
 
@@ -1006,6 +1021,7 @@ async function fetchProvider(
         "RSS parsed: " +
         items.length +
         " items"
+
     };
 
 
@@ -1028,6 +1044,7 @@ async function fetchProvider(
         )
 
     };
+
   }
 }
 
@@ -1098,6 +1115,7 @@ function dedupe(
       link &&
       links.has(link)
     ) {
+
       continue;
     }
 
@@ -1106,6 +1124,7 @@ function dedupe(
       title &&
       titles.has(title)
     ) {
+
       continue;
     }
 
@@ -1123,6 +1142,7 @@ function dedupe(
     result.push(
       item
     );
+
   }
 
 
@@ -1212,7 +1232,9 @@ async function getNews(
       merged.push(
         ...result.items
       );
+
     }
+
   }
 
 
@@ -1223,6 +1245,7 @@ async function getNews(
     merged.push(
       ...bseResult.items
     );
+
   }
 
 
@@ -1254,10 +1277,12 @@ async function getNews(
       ) {
 
         return db - da;
+
       }
 
 
       return 0;
+
     }
   );
 
@@ -1286,6 +1311,7 @@ async function getNews(
     ),
 
     {
+
       provider:
         bseResult.provider,
 
@@ -1332,7 +1358,15 @@ async function getNews(
 
     items,
 
-    attempts
+    attempts,
+
+    /*
+     * TEMPORARY BSE DEBUG DATA
+     */
+
+    bseDebugRaw:
+      bseResult.debugRaw || []
+
   };
 }
 
@@ -1357,6 +1391,7 @@ async function handle(
         headers: CORS
       }
     );
+
   }
 
 
@@ -1386,7 +1421,7 @@ async function handle(
         "MarketFeed RSS Proxy",
 
       version:
-        "11-multisource-bse",
+        "11-multisource-bse-diagnostic",
 
       endpoints: [
         "/rss?url=RSS_URL",
@@ -1401,6 +1436,7 @@ async function handle(
       ]
 
     });
+
   }
 
 
@@ -1425,11 +1461,14 @@ async function handle(
       return json(
         {
           ok: false,
+
           error:
             "Missing q parameter"
+
         },
         400
       );
+
     }
 
 
@@ -1438,6 +1477,7 @@ async function handle(
         keyword
       )
     );
+
   }
 
 
@@ -1462,11 +1502,14 @@ async function handle(
       return json(
         {
           ok: false,
+
           error:
             "Missing url parameter"
+
         },
         400
       );
+
     }
 
 
@@ -1493,6 +1536,7 @@ async function handle(
         throw new Error(
           "Only HTTP/HTTPS URLs are allowed"
         );
+
       }
 
     } catch (_) {
@@ -1500,11 +1544,14 @@ async function handle(
       return json(
         {
           ok: false,
+
           error:
             "Invalid RSS URL"
+
         },
         400
       );
+
     }
 
 
@@ -1536,9 +1583,11 @@ async function handle(
 
             url:
               targetURL.toString()
+
           },
           502
         );
+
       }
 
 
@@ -1562,9 +1611,11 @@ async function handle(
 
             url:
               targetURL.toString()
+
           },
           502
         );
+
       }
 
 
@@ -1603,26 +1654,36 @@ async function handle(
 
           url:
             targetURL.toString()
+
         },
         502
       );
+
     }
+
   }
 
+
+  /* =======================================================
+     NOT FOUND
+     ======================================================= */
 
   return json(
     {
       ok: false,
+
       error:
         "Not found"
+
     },
     404
   );
+
 }
 
 
 /* =========================================================
-   CLOUDFLARE
+   CLOUDFLARE WORKER
    ========================================================= */
 
 export default {
