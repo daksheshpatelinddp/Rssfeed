@@ -149,7 +149,7 @@
     */
 
    params.set(
-     "strscrip",
+     "strScrip",
      String(scripCode)
    );
 
