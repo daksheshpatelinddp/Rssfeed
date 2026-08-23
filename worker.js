@@ -873,42 +873,39 @@ async function fetchBSENews(
 
 
   const items =
-    allRows
-      .map(
-        normalizeBSE
-      )
-      .filter(
-        item =>
-          item.title ||
-          item.link
-      )
-      .filter(
-        item =>
-          bseMatches(
-            item,
-            keyword
-          )
-      );
+    const items =
+  allRows
+    .map(
+      normalizeBSE
+    )
+    .filter(
+      item =>
+        item.title ||
+        item.link
+    );
+      
 
 
   return {
 
-    ok:
-      items.length > 0,
+  ok:
+    items.length > 0,
 
-    provider:
-      "BSE Corporate Announcements",
+  provider:
+    "BSE Corporate Announcements",
 
-    keyword,
+  keyword,
 
-    count:
-      items.length,
+  count:
+    items.length,
 
-    items,
+  items,
 
-    attempts
-  };
-}
+  attempts,
+
+  debugRaw:
+    allRows.slice(0, 3)
+};
 
 
 /* =========================================================
