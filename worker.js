@@ -1,30 +1,21 @@
 /*
- * MarketFeed RSS Worker - V16
+ * MarketFeed RSS Worker - V17
  *
- * BSE ADVANCED SEARCH TEST
+ * BSE CORPORATE ANNOUNCEMENT RSS TEST
  *
- * Provider:
- *   BSE Corporate Announcements ONLY
+ * SOURCE:
+ * https://beta.bseindia.com/data/xml/announcements.xml
  *
- * Test company:
- *   Tata Consultancy Services Ltd
+ * TEST:
+ *   TCS
  *   BSE Scrip Code: 532540
- *
- * Time window:
  *   Last 6 hours
  *
- * Endpoint:
- *   /news?q=TCS
- *
- * BSE API:
- *   getDataAdvance_New/w
- *
- * IMPORTANT:
- * This version does NOT use:
- *
- *   AnnSubCategoryGetData/w
- *
- * It tests the BSE Advanced Search endpoint directly.
+ * NO:
+ *   Google News
+ *   Bing News
+ *   GDELT
+ *   BSE JSON API
  */
 
 
@@ -41,7 +32,26 @@ const CORS = {
 
 
 /* =========================================================
-   JSON RESPONSE
+   BSE RSS
+   ========================================================= */
+
+const BSE_RSS =
+  "https://beta.bseindia.com/data/xml/announcements.xml";
+
+
+/* =========================================================
+   TEST COMPANY
+   ========================================================= */
+
+const COMPANY = {
+  keyword: "TCS",
+  name: "Tata Consultancy Services Ltd",
+  scripCode: "532540"
+};
+
+
+/* =========================================================
+   JSON
    ========================================================= */
 
 function json(data, status = 200) {
@@ -62,537 +72,374 @@ function json(data, status = 200) {
 
 
 /* =========================================================
-   COMPANY
+   TEXT CLEANING
    ========================================================= */
 
-const COMPANY = {
+function cleanText(value) {
 
-  keyword:
-    "TCS",
-
-  name:
-    "Tata Consultancy Services Ltd",
-
-  scripCode:
-    "532540"
-
-};
-
-
-/* =========================================================
-   IST DATE/TIME
-   ========================================================= */
-
-function istParts(date) {
-
-  const parts =
-    new Intl.DateTimeFormat(
-      "en-CA",
-      {
-        timeZone: "Asia/Kolkata",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit"
-      }
-    ).formatToParts(date);
-
-  const result = {};
-
-  for (const part of parts) {
-
-    result[part.type] =
-      part.value;
-
+  if (value == null) {
+    return "";
   }
 
-  return result;
+  return String(value)
+    .replace(/<!\[CDATA\[/gi, "")
+    .replace(/\]\]>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 }
 
 
 /* =========================================================
-   YYYY-MM-DD
+   XML ENTITY DECODING
    ========================================================= */
 
-function istDate(date) {
+function decodeEntities(value) {
 
-  const p =
-    istParts(date);
+  return String(value || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
 
-  return (
-    p.year +
-    "-" +
-    p.month +
-    "-" +
-    p.day
-  );
+    .replace(
+      /&#(\d+);/g,
+      (_, n) =>
+        String.fromCharCode(
+          Number(n)
+        )
+    )
+
+    .replace(
+      /&#x([0-9a-f]+);/gi,
+      (_, n) =>
+        String.fromCharCode(
+          parseInt(n, 16)
+        )
+    );
 
 }
 
 
 /* =========================================================
-   BSE API DATE
+   XML TAG VALUE
    ========================================================= */
 
-function bseDate(date) {
+function tagValue(block, tag) {
 
-  const p =
-    istParts(date);
+  const re =
+    new RegExp(
+      `<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`,
+      "i"
+    );
 
-  return (
-    p.year +
-    p.month +
-    p.day
-  );
+  const match =
+    block.match(re);
+
+  return match
+    ? decodeEntities(
+        cleanText(match[1])
+      )
+    : "";
 
 }
 
 
 /* =========================================================
-   ADVANCED SEARCH URL
+   RSS ITEM PARSER
    ========================================================= */
 
-function bseAdvancedUrl(
-  fromDate,
-  toDate,
-  scripCode
-) {
+function parseBSEFeed(xml) {
 
-  const params =
-    new URLSearchParams();
+  const items = [];
 
-
-  /*
-   * These parameter names are from
-   * BSE's getDataAdvance_New endpoint.
-   */
-
-  params.set(
-    "strTxtNoticeNo",
-    ""
-  );
-
-  params.set(
-    "strTxtDate",
-    fromDate
-  );
-
-  params.set(
-    "strTxtTodate",
-    toDate
-  );
-
-  params.set(
-    "strScripcode",
-    String(scripCode)
-  );
-
-  params.set(
-    "strDep",
-    ""
-  );
-
-  params.set(
-    "strSegment",
-    "Equity"
-  );
-
-  params.set(
-    "subject",
-    ""
-  );
-
-  params.set(
-    "category",
-    ""
-  );
-
-  params.set(
-    "containgtext",
-    ""
-  );
+  const blocks =
+    xml.match(
+      /<item\b[\s\S]*?<\/item>/gi
+    ) || [];
 
 
-  return (
-    "https://api.bseindia.com/" +
-    "BseIndiaAPI/api/" +
-    "getDataAdvance_New/w?" +
-    params.toString()
-  );
+  for (
+    const block
+    of blocks
+  ) {
 
-}
+    const title =
+      tagValue(
+        block,
+        "title"
+      );
+
+    const link =
+      tagValue(
+        block,
+        "link"
+      );
+
+    const scripCode =
+      tagValue(
+        block,
+        "scripcode"
+      );
+
+    const description =
+      tagValue(
+        block,
+        "description"
+      );
+
+    const pubDate =
+      tagValue(
+        block,
+        "pubDate"
+      );
 
 
-/* =========================================================
-   FETCH BSE ADVANCED SEARCH
-   ========================================================= */
-
-async function fetchBSEAdvanced(
-  fromDate,
-  toDate,
-  scripCode
-) {
-
-  const url =
-    bseAdvancedUrl(
-      fromDate,
-      toDate,
+    if (
+      title ||
+      link ||
       scripCode
-    );
+    ) {
 
+      items.push({
 
-  const response =
-    await fetch(
-      url,
-      {
-        method: "GET",
+        title,
 
-        headers: {
+        link,
 
-          "User-Agent":
-            "Mozilla/5.0 " +
-            "(Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) " +
-            "Chrome/134.0.0.0 " +
-            "Safari/537.36",
+        scripCode,
 
-          "Accept":
-            "application/json, " +
-            "text/plain, */*",
+        description,
 
-          "Accept-Language":
-            "en-IN,en;q=0.9",
+        pubDate
 
-          "Referer":
-            "https://www.bseindia.com/",
+      });
 
-          "Origin":
-            "https://www.bseindia.com"
-
-        },
-
-        redirect:
-          "follow"
-
-      }
-    );
-
-
-  const text =
-    await response.text();
-
-
-  if (!response.ok) {
-
-    return {
-
-      ok: false,
-
-      status:
-        response.status,
-
-      url,
-
-      detail:
-        "BSE HTTP " +
-        response.status +
-        ": " +
-        text.slice(0, 500)
-
-    };
+    }
 
   }
 
 
-  let data;
-
-  try {
-
-    data =
-      JSON.parse(text);
-
-  } catch (error) {
-
-    return {
-
-      ok: false,
-
-      status:
-        response.status,
-
-      url,
-
-      detail:
-        "BSE returned non-JSON: " +
-        text.slice(0, 500)
-
-    };
-
-  }
-
-
-  return {
-
-    ok: true,
-
-    status:
-      response.status,
-
-    url,
-
-    data
-
-  };
-
-}
-
-
-/* =========================================================
-   EXTRACT ROWS
-   ========================================================= */
-
-function extractRows(data) {
-
-  if (
-    Array.isArray(
-      data?.Table
-    )
-  ) {
-
-    return data.Table;
-
-  }
-
-
-  if (
-    Array.isArray(
-      data?.Table1
-    )
-  ) {
-
-    return data.Table1;
-
-  }
-
-
-  if (
-    Array.isArray(data)
-  ) {
-
-    return data;
-
-  }
-
-
-  return [];
+  return items;
 
 }
 
 
 /* =========================================================
    BSE DATE PARSER
-   ========================================================= */
+ *
+ * Example:
+ *
+ * 23-Aug-2026 20:37:08
+ *
+ * BSE time is IST.
+ * ========================================================= */
 
 function parseBSEDate(value) {
 
   if (!value) {
+    return NaN;
+  }
+
+
+  const text =
+    String(value)
+      .trim();
+
+
+  const match =
+    text.match(
+      /^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/
+    );
+
+
+  if (!match) {
+
+    return Date.parse(text);
+
+  }
+
+
+  const day =
+    Number(match[1]);
+
+
+  const monthNames = {
+
+    Jan: 0,
+    Feb: 1,
+    Mar: 2,
+    Apr: 3,
+    May: 4,
+    Jun: 5,
+    Jul: 6,
+    Aug: 7,
+    Sep: 8,
+    Oct: 9,
+    Nov: 10,
+    Dec: 11
+
+  };
+
+
+  const month =
+    monthNames[
+      match[2]
+    ];
+
+
+  const year =
+    Number(match[3]);
+
+
+  const hour =
+    Number(match[4]);
+
+
+  const minute =
+    Number(match[5]);
+
+
+  const second =
+    Number(match[6]);
+
+
+  if (
+    month === undefined
+  ) {
 
     return NaN;
 
   }
 
 
-  const text =
-    String(value).trim();
-
-
   /*
-   * Typical BSE value:
-   *
-   * 2026-08-23T13:51:31.72
-   *
-   * BSE timestamps are treated as IST.
+   * Convert IST to UTC.
    */
 
-  const match =
-    text.match(
-      /^(\d{4})-(\d{2})-(\d{2})T(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?/
-    );
-
-
-  if (match) {
-
-    const year =
-      Number(match[1]);
-
-    const month =
-      Number(match[2]) - 1;
-
-    const day =
-      Number(match[3]);
-
-    const hour =
-      Number(match[4]);
-
-    const minute =
-      Number(match[5]);
-
-    const second =
-      Number(match[6] || 0);
-
-
-    /*
-     * Convert IST to UTC.
-     */
-
-    return Date.UTC(
-      year,
-      month,
-      day,
-      hour,
-      minute,
-      second
-    ) -
-    (
-      5 * 60 * 60 * 1000 +
-      30 * 60 * 1000
-    );
-
-  }
-
-
-  const timestamp =
-    Date.parse(text);
-
-
-  return Number.isFinite(timestamp)
-    ? timestamp
-    : NaN;
+  return Date.UTC(
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second
+  )
+  -
+  (
+    5 * 60 * 60 * 1000 +
+    30 * 60 * 1000
+  );
 
 }
 
 
 /* =========================================================
-   NORMALIZE BSE ITEM
+   FETCH BSE RSS
    ========================================================= */
 
-function normalizeBSE(row) {
+async function fetchBSERSS() {
 
-  const published =
-    row?.DissemDT ||
-    row?.News_submission_dt ||
-    row?.DT_TM ||
-    row?.NEWS_DT ||
-    "";
+  try {
 
+    const response =
+      await fetch(
+        BSE_RSS,
+        {
+          method: "GET",
 
-  const newsId =
-    String(
-      row?.NEWSID ||
-      row?.NewsID ||
-      row?.NEWS_ID ||
-      ""
-    );
+          headers: {
 
+            "User-Agent":
+              "Mozilla/5.0 " +
+              "(Windows NT 10.0; Win64; x64) " +
+              "AppleWebKit/537.36 " +
+              "(KHTML, like Gecko) " +
+              "Chrome/134.0.0.0 " +
+              "Safari/537.36",
 
-  let link = "";
+            "Accept":
+              "application/rss+xml, " +
+              "application/xml, " +
+              "text/xml, " +
+              "*/*",
 
+            "Accept-Language":
+              "en-IN,en;q=0.9",
 
-  if (
-    row?.ATTACHMENTNAME
-  ) {
+            "Referer":
+              "https://www.bseindia.com/",
 
-    link =
-      "https://www.bseindia.com/" +
-      "xml-data/corpfiling/" +
-      "AttachLive/" +
-      row.ATTACHMENTNAME;
+            "Origin":
+              "https://www.bseindia.com"
 
-  }
-  else if (
-    row?.NSURL
-  ) {
+          },
 
-    link =
-      row.NSURL;
+          redirect:
+            "follow"
 
-  }
-  else if (
-    newsId
-  ) {
-
-    link =
-      "https://www.bseindia.com/" +
-      "stockinfo/anndet.aspx?" +
-      "newsid=" +
-      encodeURIComponent(
-        newsId
+        }
       );
 
+
+    const text =
+      await response.text();
+
+
+    return {
+
+      ok:
+        response.ok,
+
+      status:
+        response.status,
+
+      text,
+
+      contentType:
+        response.headers.get(
+          "content-type"
+        ),
+
+      size:
+        text.length
+
+    };
+
+
   }
+  catch (error) {
 
+    return {
 
-  return {
+      ok: false,
 
-    title:
-      String(
-        row?.NEWSSUB ||
-        row?.HEADLINE ||
-        row?.SUBJECT ||
-        ""
-      ).trim(),
+      status: 0,
 
-    link,
+      text: "",
 
-    description:
-      String(
-        row?.MORE ||
-        row?.HEADLINE ||
-        ""
-      ).trim(),
+      contentType: "",
 
-    published,
+      size: 0,
 
-    guid:
-      newsId ||
-      link,
+      error:
+        String(
+          error?.message ||
+          error
+        )
 
-    source:
-      "BSE Corporate Announcements",
+    };
 
-    company:
-      String(
-        row?.SLONGNAME ||
-        row?.ScripName ||
-        ""
-      ).trim(),
-
-    scrip:
-      String(
-        row?.SCRIP_CD ||
-        row?.SCRIPCODE ||
-        row?.ScripCode ||
-        COMPANY.scripCode
-      ).trim(),
-
-    category:
-      String(
-        row?.CATEGORYNAME ||
-        row?.CATEGORY ||
-        ""
-      ).trim(),
-
-    bseNewsId:
-      newsId
-
-  };
+  }
 
 }
 
 
 /* =========================================================
-   DEDUPE
+   DEDUPLICATION
    ========================================================= */
 
 function dedupe(items) {
@@ -610,13 +457,12 @@ function dedupe(items) {
   ) {
 
     const key =
-      item.bseNewsId ||
-      item.link ||
-      (
-        item.title +
-        "|" +
-        item.published
-      );
+      [
+        item.scripCode,
+        item.link,
+        item.pubDate,
+        item.title
+      ].join("|");
 
 
     if (
@@ -644,62 +490,36 @@ function dedupe(items) {
    GET TCS NEWS
    ========================================================= */
 
-async function getTCSNews() {
+async function getNews() {
 
   const now =
-    new Date();
+    Date.now();
 
 
   const sixHoursAgo =
-    new Date(
-      now.getTime() -
-      6 * 60 * 60 * 1000
-    );
-
-
-  const fromDate =
-    istDate(
-      sixHoursAgo
-    );
-
-
-  const toDate =
-    istDate(
-      now
-    );
-
-
-  const fromBSEDate =
-    bseDate(
-      sixHoursAgo
-    );
-
-
-  const toBSEDate =
-    bseDate(
-      now
+    now -
+    (
+      6 *
+      60 *
+      60 *
+      1000
     );
 
 
   /*
-   * BSE Advanced Search accepts
-   * date-only values.
-   *
-   * Therefore we request today's
-   * date and perform the exact
-   * 6-hour time filtering ourselves.
+   * Fetch actual BSE RSS.
    */
 
-  const result =
-    await fetchBSEAdvanced(
-      fromDate,
-      toDate,
-      COMPANY.scripCode
-    );
+  const fetched =
+    await fetchBSERSS();
 
+
+  /*
+   * BSE request failed.
+   */
 
   if (
-    !result.ok
+    !fetched.ok
   ) {
 
     return {
@@ -721,25 +541,30 @@ async function getTCSNews() {
       timeWindow:
         "last 6 hours",
 
-      count:
-        0,
+      count: 0,
 
       items: [],
 
       diagnostic: {
 
+        feedURL:
+          BSE_RSS,
+
+        httpStatus:
+          fetched.status,
+
+        contentType:
+          fetched.contentType,
+
+        responseSize:
+          fetched.size,
+
         error:
-          result.detail,
-
-        status:
-          result.status,
-
-        requestURL:
-          result.url,
-
-        fromDate,
-
-        toDate
+          fetched.error ||
+          (
+            "BSE RSS returned HTTP " +
+            fetched.status
+          )
 
       }
 
@@ -748,42 +573,53 @@ async function getTCSNews() {
   }
 
 
-  const allRows =
-    extractRows(
-      result.data
+  /*
+   * Parse RSS.
+   */
+
+  const allItems =
+    parseBSEFeed(
+      fetched.text
     );
 
 
   /*
-   * Normalize first.
+   * Filter by exact BSE
+   * scrip code.
    */
 
-  const normalized =
-    allRows.map(
-      normalizeBSE
+  const companyItems =
+    allItems.filter(
+      item =>
+        String(
+          item.scripCode
+        ).trim() ===
+        COMPANY.scripCode
     );
 
 
   /*
-   * Exact six-hour filtering.
+   * Filter last 6 hours.
    */
 
-  const recent =
-    normalized.filter(
+  const recentItems =
+    companyItems.filter(
       item => {
 
-        const time =
+        const timestamp =
           parseBSEDate(
-            item.published
+            item.pubDate
           );
 
 
         return (
-          Number.isFinite(time) &&
-          time >=
-            sixHoursAgo.getTime() &&
-          time <=
-            now.getTime()
+          Number.isFinite(
+            timestamp
+          ) &&
+          timestamp >=
+            sixHoursAgo &&
+          timestamp <=
+            now
         );
 
       }
@@ -791,73 +627,76 @@ async function getTCSNews() {
 
 
   /*
-   * Safety check:
-   *
-   * The API should already be
-   * filtered by scrip code.
-   *
-   * But we verify the returned
-   * records as well.
+   * Remove duplicates.
    */
 
-  const matchingCompany =
-    recent.filter(
-      item => {
-
-        const code =
-          String(
-            item.scrip ||
-            ""
-          ).trim();
-
-
-        const company =
-          String(
-            item.company ||
-            ""
-          ).toLowerCase();
-
-
-        return (
-          code ===
-            COMPANY.scripCode ||
-          company.includes(
-            "tata consultancy services"
-          )
-        );
-
-      }
-    );
-
-
-  const items =
+  const uniqueItems =
     dedupe(
-      matchingCompany
+      recentItems
     );
 
 
-  items.sort(
+  /*
+   * Newest first.
+   */
+
+  uniqueItems.sort(
     (a, b) => {
 
-      const da =
+      return (
         parseBSEDate(
-          a.published
-        );
-
-      const db =
+          b.pubDate
+        ) -
         parseBSEDate(
-          b.published
-        );
-
-      return db - da;
+          a.pubDate
+        )
+      );
 
     }
   );
 
 
-  const finalItems =
-    items.slice(0, 20);
+  /*
+   * Maximum 20 results.
+   */
 
+  const finalItems =
+    uniqueItems
+      .slice(0, 20)
+      .map(
+        item => ({
+
+          title:
+            item.title,
+
+          link:
+            item.link,
+
+          description:
+            item.description,
+
+          published:
+            item.pubDate,
+
+          guid:
+            item.link,
+
+          source:
+            "BSE Corporate Announcements",
+
+          company:
+            COMPANY.name,
+
+          scripCode:
+            item.scripCode
+
+        })
+      );
+
+
+  /*
+   * Return diagnostic data.
+   */
 
   return {
 
@@ -887,49 +726,45 @@ async function getTCSNews() {
 
     diagnostic: {
 
-      endpoint:
-        "getDataAdvance_New/w",
+      feedURL:
+        BSE_RSS,
 
-      fromDate,
+      httpStatus:
+        fetched.status,
 
-      toDate,
+      contentType:
+        fetched.contentType,
 
-      bseFromDate:
-        fromBSEDate,
+      responseSize:
+        fetched.size,
 
-      bseToDate:
-        toBSEDate,
+      totalRSSItems:
+        allItems.length,
 
-      totalRowsReturnedByBSE:
-        allRows.length,
+      matchingScripItems:
+        companyItems.length,
 
-      rowsLast6Hours:
-        recent.length,
-
-      matchingCompanyRows:
-        matchingCompany.length,
+      matchingLast6Hours:
+        recentItems.length,
 
       finalCount:
         finalItems.length,
 
       now:
-        now.toISOString(),
+        new Date(
+          now
+        ).toISOString(),
 
       sixHoursAgo:
-        sixHoursAgo.toISOString(),
+        new Date(
+          sixHoursAgo
+        ).toISOString(),
 
-      totalPages:
-        result.data?.Table1?.[0]?.TotalPageCnt ||
-        result.data?.Table1?.[0]?.ROWCNT ||
-        null,
+      firstRSSItem:
+        allItems[0] || null,
 
-      responseKeys:
-        Object.keys(
-          result.data || {}
-        ),
-
-      firstRawRecord:
-        allRows[0] || null
+      firstMatchingItem:
+        companyItems[0] || null
 
     }
 
@@ -945,6 +780,10 @@ async function getTCSNews() {
 async function handle(
   request
 ) {
+
+  /*
+   * OPTIONS
+   */
 
   if (
     request.method ===
@@ -989,15 +828,18 @@ async function handle(
         "MarketFeed RSS Proxy",
 
       version:
-        "16-bse-advanced-search",
+        "17-bse-rss-only",
 
       provider:
         "BSE Corporate Announcements",
 
-      company:
+      feed:
+        BSE_RSS,
+
+      testCompany:
         COMPANY.name,
 
-      scripCode:
+      testScripCode:
         COMPANY.scripCode,
 
       timeWindow:
@@ -1024,7 +866,8 @@ async function handle(
         url.searchParams.get(
           "q"
         ) || ""
-      ).trim()
+      )
+      .trim()
       .toUpperCase();
 
 
@@ -1035,6 +878,7 @@ async function handle(
 
       return json(
         {
+
           ok: false,
 
           error:
@@ -1053,7 +897,7 @@ async function handle(
     try {
 
       return json(
-        await getTCSNews()
+        await getNews()
       );
 
     }
@@ -1070,7 +914,7 @@ async function handle(
           keyword,
 
           error:
-            "BSE request failed",
+            "Unexpected worker error",
 
           detail:
             String(
@@ -1093,6 +937,7 @@ async function handle(
 
   return json(
     {
+
       ok: false,
 
       error:
