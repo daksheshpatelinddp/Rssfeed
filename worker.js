@@ -1,20 +1,21 @@
-/* MarketFeed RSS Worker - V9 MULTI-SOURCE
+/*
+ * MarketFeed RSS Worker - V12 BASE
+ *
+ * PRE-BSE-ISOLATION BASE
+ *
+ * Sources:
+ *   Google News RSS
+ *   GDELT News RSS
+ *   Bing News RSS
+ *   BSE Corporate Announcements RSS
  *
  * Endpoints:
- *   /                         health/status
- *   /news?q=TCS               multi-source keyword news
- *   /rss?url=...              existing RSS/Atom proxy
+ *   /
+ *   /news?q=TCS
+ *   /rss?url=RSS_URL
  *
- * Keyword sources:
- *   - GDELT News RSS
- *   - Bing News RSS
- *   - Google News RSS
- *
- * IMPORTANT:
- *   All keyword providers are fetched together.
- *   Results are merged and deduplicated.
- *   No NewsData.io API.
- *   No GNews API.
+ * Main news window:
+ *   Last 6 hours
  */
 
 const CORS = {
@@ -24,19 +25,28 @@ const CORS = {
   "Cache-Control": "no-store"
 };
 
-function json(data, status = 200, extra = {}) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      ...CORS,
-      ...extra,
-      "Content-Type": "application/json; charset=utf-8"
+
+/* =========================================================
+   RESPONSE
+   ========================================================= */
+
+function json(data, status = 200) {
+  return new Response(
+    JSON.stringify(data),
+    {
+      status,
+      headers: {
+        ...CORS,
+        "Content-Type": "application/json; charset=utf-8"
+      }
     }
-  });
+  );
 }
 
 
-/* ================= TEXT HELPERS ================= */
+/* =========================================================
+   TEXT
+   ========================================================= */
 
 function cleanText(value) {
   if (value == null) return "";
@@ -50,8 +60,8 @@ function cleanText(value) {
 }
 
 
-function decodeEntities(s) {
-  return String(s || "")
+function decodeEntities(value) {
+  return String(value || "")
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
@@ -73,10 +83,10 @@ function tagValue(block, tag) {
     "i"
   );
 
-  const m = block.match(re);
+  const match = block.match(re);
 
-  return m
-    ? decodeEntities(cleanText(m[1]))
+  return match
+    ? decodeEntities(cleanText(match[1]))
     : "";
 }
 
@@ -87,29 +97,29 @@ function attrValue(block, tag, attr) {
     "i"
   );
 
-  const m = block.match(re);
+  const match = block.match(re);
 
-  return m
-    ? decodeEntities(m[1])
+  return match
+    ? decodeEntities(match[1])
     : "";
 }
 
 
-/* ================= RSS PARSER ================= */
+/* =========================================================
+   RSS PARSER
+   ========================================================= */
 
 function parseRSS(text, limit = 50) {
+
   const items = [];
 
-  const rssBlocks =
+  const rss =
     text.match(/<item\b[\s\S]*?<\/item>/gi) || [];
 
-  const atomBlocks =
+  const atom =
     text.match(/<entry\b[\s\S]*?<\/entry>/gi) || [];
 
-  const blocks =
-    rssBlocks.length
-      ? rssBlocks
-      : atomBlocks;
+  const blocks = rss.length ? rss : atom;
 
   for (const block of blocks.slice(0, limit)) {
 
@@ -139,13 +149,17 @@ function parseRSS(text, limit = 50) {
       tagValue(block, "guid") ||
       tagValue(block, "id");
 
+    const scripcode =
+      tagValue(block, "scripcode");
+
     if (title || link) {
       items.push({
         title,
         link,
         description,
         published,
-        guid
+        guid,
+        scripcode
       });
     }
   }
@@ -154,42 +168,58 @@ function parseRSS(text, limit = 50) {
 }
 
 
-/* ================= FETCH RSS ================= */
+/* =========================================================
+   RSS FETCH
+   ========================================================= */
 
 async function fetchRSS(url) {
 
-  const response = await fetch(url, {
-    method: "GET",
-
-    headers: {
-      "User-Agent":
-        "MarketFeed/9.0 (+RSS reader)",
-
-      "Accept":
-        "application/rss+xml, " +
-        "application/atom+xml, " +
-        "application/xml, " +
-        "text/xml, " +
-        "*/*"
-    },
-
-    redirect: "follow"
-  });
-
-  const text =
-    await response.text();
+  const response = await fetch(
+    url,
+    {
+      method: "GET",
+      headers: {
+        "User-Agent":
+          "MarketFeed/12.0",
+        "Accept":
+          "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
+      },
+      redirect: "follow"
+    }
+  );
 
   return {
     response,
-    text
+    text: await response.text()
   };
 }
 
 
-/* ================= SOURCE URLS ================= */
+/* =========================================================
+   NEWS SOURCE URLS
+   ========================================================= */
+
+function googleUrl(keyword) {
+  return (
+    "https://news.google.com/rss/search?q=" +
+    encodeURIComponent(keyword) +
+    "&hl=en-IN" +
+    "&gl=IN" +
+    "&ceid=IN:en"
+  );
+}
+
+
+function bingUrl(keyword) {
+  return (
+    "https://www.bing.com/news/search?q=" +
+    encodeURIComponent(keyword) +
+    "&format=rss"
+  );
+}
+
 
 function gdeltUrl(keyword) {
-
   return (
     "https://api.gdeltproject.org/api/v2/doc/doc?" +
     "query=" +
@@ -203,119 +233,128 @@ function gdeltUrl(keyword) {
 }
 
 
-function bingUrl(keyword) {
+/* =========================================================
+   BSE RSS
+   ========================================================= */
 
-  return (
-    "https://www.bing.com/news/search?q=" +
-    encodeURIComponent(keyword) +
-    "&format=rss"
-  );
-}
+const BSE_ANNOUNCEMENT_RSS =
+  "https://beta.bseindia.com/data/xml/announcements.xml";
 
 
-function googleUrl(keyword) {
+/* =========================================================
+   DATE PARSING
+   ========================================================= */
 
-  return (
-    "https://news.google.com/rss/search?q=" +
-    encodeURIComponent(keyword) +
-    "&hl=en-IN" +
-    "&gl=IN" +
-    "&ceid=IN:en"
-  );
-}
+function parseDate(value) {
 
+  if (!value) return NaN;
 
-/* ================= NORMALIZATION ================= */
+  let timestamp =
+    Date.parse(value);
 
-function normalizeItem(item, provider) {
-
-  return {
-    title: item.title || "",
-    link: item.link || item.url || "",
-    description: item.description || "",
-    published:
-      item.published ||
-      item.date ||
-      "",
-    guid:
-      item.guid ||
-      item.link ||
-      item.url ||
-      "",
-    source:
-      item.source ||
-      provider
-  };
-}
-
-
-/* ================= DEDUPLICATION ================= */
-
-function normalizeForCompare(value) {
-
-  return String(value || "")
-    .toLowerCase()
-    .replace(/https?:\/\//g, "")
-    .replace(/^www\./, "")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-
-function dedupeNews(items) {
-
-  const seenLinks =
-    new Set();
-
-  const seenTitles =
-    new Set();
-
-  const result = [];
-
-  for (const item of items) {
-
-    const link =
-      normalizeForCompare(item.link);
-
-    const title =
-      normalizeForCompare(item.title);
-
-    /*
-     * URL is strongest duplicate key.
-     */
-
-    if (link && seenLinks.has(link)) {
-      continue;
-    }
-
-    /*
-     * Same title from different providers
-     * is normally the same news article.
-     */
-
-    if (title && seenTitles.has(title)) {
-      continue;
-    }
-
-    if (link) {
-      seenLinks.add(link);
-    }
-
-    if (title) {
-      seenTitles.add(title);
-    }
-
-    result.push(item);
+  if (Number.isFinite(timestamp)) {
+    return timestamp;
   }
 
-  return result;
+  /*
+   * BSE format:
+   * 23-Aug-2026 20:37:08
+   */
+
+  const m =
+    String(value).match(
+      /^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/
+    );
+
+  if (m) {
+
+    const months = {
+      Jan: 0,
+      Feb: 1,
+      Mar: 2,
+      Apr: 3,
+      May: 4,
+      Jun: 5,
+      Jul: 6,
+      Aug: 7,
+      Sep: 8,
+      Oct: 9,
+      Nov: 10,
+      Dec: 11
+    };
+
+    const month =
+      months[m[2]];
+
+    if (month !== undefined) {
+
+      return Date.UTC(
+        Number(m[3]),
+        month,
+        Number(m[1]),
+        Number(m[4]) - 5,
+        Number(m[5]) - 30,
+        Number(m[6])
+      );
+    }
+  }
+
+  return NaN;
 }
 
 
-/* ================= KEYWORD NEWS ================= */
+/* =========================================================
+   KEYWORD MATCH
+   ========================================================= */
 
-async function fetchProvider(provider, url) {
+function keywordMatches(item, keyword) {
+
+  const q =
+    String(keyword || "")
+      .toLowerCase()
+      .trim();
+
+  if (!q) return true;
+
+  const text =
+    [
+      item.title,
+      item.description,
+      item.company,
+      item.scripcode,
+      item.scripCode
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+  if (text.includes(q)) {
+    return true;
+  }
+
+  const words =
+    q.split(/\s+/)
+      .filter(x => x.length >= 2);
+
+  return (
+    words.length > 0 &&
+    words.every(
+      word => text.includes(word)
+    )
+  );
+}
+
+
+/* =========================================================
+   GENERIC PROVIDER
+   ========================================================= */
+
+async function fetchProvider(
+  provider,
+  url,
+  keyword,
+  limit = 50
+) {
 
   try {
 
@@ -323,11 +362,6 @@ async function fetchProvider(provider, url) {
       response,
       text
     } = await fetchRSS(url);
-
-    const contentType =
-      response.headers.get(
-        "content-type"
-      ) || "";
 
     if (!response.ok) {
 
@@ -342,28 +376,38 @@ async function fetchProvider(provider, url) {
       };
     }
 
-    /*
-     * All three keyword sources are
-     * expected to return RSS.
-     */
+    const parsed =
+      parseRSS(text, limit);
 
     const items =
-      parseRSS(text, 50)
-        .map(x =>
-          normalizeItem(
-            x,
-            provider
-          )
-        )
-        .filter(x =>
-          x.title || x.link
-        );
+      parsed.map(item => ({
+        title:
+          item.title || "",
 
-    /*
-     * Keep a small diagnostic entry.
-     * This helps identify a source that
-     * stops returning RSS.
-     */
+        link:
+          item.link || "",
+
+        description:
+          item.description || "",
+
+        published:
+          item.published || "",
+
+        guid:
+          item.guid ||
+          item.link ||
+          "",
+
+        source:
+          provider,
+
+        scripcode:
+          item.scripcode || ""
+      }))
+      .filter(item =>
+        item.title ||
+        item.link
+      );
 
     return {
       provider,
@@ -373,11 +417,10 @@ async function fetchProvider(provider, url) {
       detail:
         "RSS parsed: " +
         items.length +
-        " items",
-      contentType
+        " items"
     };
 
-  } catch (err) {
+  } catch (error) {
 
     return {
       provider,
@@ -386,15 +429,264 @@ async function fetchProvider(provider, url) {
       items: [],
       detail:
         String(
-          err?.message ||
-          err
+          error?.message ||
+          error
         )
     };
   }
 }
 
 
-async function keywordNews(keyword) {
+/* =========================================================
+   BSE PROVIDER
+   ========================================================= */
+
+async function fetchBSE(keyword) {
+
+  try {
+
+    const {
+      response,
+      text
+    } =
+      await fetchRSS(
+        BSE_ANNOUNCEMENT_RSS
+      );
+
+    if (!response.ok) {
+
+      return {
+        provider:
+          "BSE Corporate Announcements",
+
+        ok: false,
+
+        status:
+          response.status,
+
+        items: [],
+
+        detail:
+          "BSE RSS HTTP " +
+          response.status
+      };
+    }
+
+    const parsed =
+      parseRSS(
+        text,
+        1000
+      );
+
+    /*
+     * BSE RSS contains:
+     *
+     * title
+     * link
+     * scripcode
+     * description
+     * pubDate
+     */
+
+    const now =
+      Date.now();
+
+    const sixHoursAgo =
+      now -
+      6 * 60 * 60 * 1000;
+
+    const items = [];
+
+    for (const item of parsed) {
+
+      const publishedMs =
+        parseDate(
+          item.published
+        );
+
+      if (
+        !Number.isFinite(
+          publishedMs
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        publishedMs <
+        sixHoursAgo
+      ) {
+        continue;
+      }
+
+      if (
+        !keywordMatches(
+          {
+            ...item,
+            scripcode:
+              item.scripcode
+          },
+          keyword
+        )
+      ) {
+        continue;
+      }
+
+      items.push({
+
+        title:
+          item.title,
+
+        link:
+          item.link,
+
+        description:
+          item.description,
+
+        published:
+          item.published,
+
+        guid:
+          item.guid ||
+          item.link,
+
+        source:
+          "BSE Corporate Announcements",
+
+        scripcode:
+          item.scripcode || ""
+      });
+    }
+
+    return {
+
+      provider:
+        "BSE Corporate Announcements",
+
+      ok: true,
+
+      status:
+        response.status,
+
+      items,
+
+      detail:
+        "BSE RSS: " +
+        parsed.length +
+        " total, " +
+        items.length +
+        " matching last 6 hours"
+
+    };
+
+  } catch (error) {
+
+    return {
+
+      provider:
+        "BSE Corporate Announcements",
+
+      ok: false,
+
+      status: 0,
+
+      items: [],
+
+      detail:
+        String(
+          error?.message ||
+          error
+        )
+    };
+  }
+}
+
+
+/* =========================================================
+   DEDUP
+   ========================================================= */
+
+function normalizeCompare(value) {
+
+  return String(value || "")
+    .toLowerCase()
+    .replace(
+      /https?:\/\//g,
+      ""
+    )
+    .replace(
+      /^www\./,
+      ""
+    )
+    .replace(
+      /[^\p{L}\p{N}]+/gu,
+      " "
+    )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim();
+}
+
+
+function dedupe(items) {
+
+  const links =
+    new Set();
+
+  const titles =
+    new Set();
+
+  const result =
+    [];
+
+  for (const item of items) {
+
+    const link =
+      normalizeCompare(
+        item.link
+      );
+
+    const title =
+      normalizeCompare(
+        item.title
+      );
+
+    if (
+      link &&
+      links.has(link)
+    ) {
+      continue;
+    }
+
+    if (
+      title &&
+      titles.has(title)
+    ) {
+      continue;
+    }
+
+    if (link) {
+      links.add(link);
+    }
+
+    if (title) {
+      titles.add(title);
+    }
+
+    result.push(item);
+  }
+
+  return result;
+}
+
+
+/* =========================================================
+   NEWS
+   ========================================================= */
+
+async function getNews(keyword) {
 
   const providers = [
 
@@ -426,69 +718,111 @@ async function keywordNews(keyword) {
 
 
   /*
-   * IMPORTANT:
-   *
-   * Promise.all means the three
-   * providers are requested together.
-   *
-   * We do NOT stop when one succeeds.
+   * RSS providers and BSE
+   * are independent.
    */
 
-  const attempts =
-    await Promise.all(
-      providers.map(p =>
-        fetchProvider(
-          p.provider,
-          p.url
+  const [
+    rssResults,
+    bseResult
+  ] =
+    await Promise.all([
+
+      Promise.all(
+        providers.map(
+          p =>
+            fetchProvider(
+              p.provider,
+              p.url,
+              keyword,
+              50
+            )
         )
-      )
-    );
+      ),
 
+      fetchBSE(keyword)
 
-  /*
-   * Merge all successful results.
-   */
+    ]);
+
 
   const merged = [];
 
-  for (const attempt of attempts) {
 
-    if (
-      attempt.ok &&
-      attempt.items.length
-    ) {
+  for (
+    const result
+    of rssResults
+  ) {
+
+    if (result.ok) {
 
       merged.push(
-        ...attempt.items
+        ...result.items
       );
     }
   }
 
 
+  if (bseResult.ok) {
+
+    merged.push(
+      ...bseResult.items
+    );
+  }
+
+
+  let items =
+    dedupe(merged);
+
+
   /*
-   * Remove duplicate articles
-   * appearing in multiple sources.
+   * Keep only recent results.
+   *
+   * This prevents the huge response
+   * that we were seeing previously.
    */
 
-  const items =
-    dedupeNews(merged);
+  const now =
+    Date.now();
+
+  const sixHoursAgo =
+    now -
+    6 * 60 * 60 * 1000;
 
 
-  /*
-   * Sort newest first where a
-   * usable publication date exists.
-   */
+  items =
+    items.filter(item => {
+
+      const time =
+        parseDate(
+          item.published
+        );
+
+      /*
+       * If date cannot be parsed,
+       * retain the item rather than
+       * accidentally losing news.
+       */
+
+      if (
+        !Number.isFinite(time)
+      ) {
+        return true;
+      }
+
+      return time >= sixHoursAgo;
+    });
+
 
   items.sort((a, b) => {
 
     const da =
-      Date.parse(
-        a.published || ""
+      parseDate(
+        a.published
       );
 
     const db =
-      Date.parse(
-        b.published || ""
+      parseDate(
+        b.published
       );
 
     if (
@@ -498,85 +832,98 @@ async function keywordNews(keyword) {
       return db - da;
     }
 
-    if (
-      Number.isFinite(db)
-    ) {
-      return 1;
-    }
-
-    if (
-      Number.isFinite(da)
-    ) {
-      return -1;
-    }
-
     return 0;
   });
 
 
-  if (!items.length) {
+  /*
+   * Hard safety limit.
+   *
+   * Frontend will never receive
+   * hundreds/thousands of records.
+   */
 
-    return {
-      ok: false,
+  const MAX_RESULTS = 100;
 
-      error:
-        "No news could be fetched " +
-        "from Google News RSS, " +
-        "GDELT, or Bing News RSS",
+  const finalItems =
+    items.slice(
+      0,
+      MAX_RESULTS
+    );
 
-      keyword,
 
-      count: 0,
+  const attempts = [
 
-      items: [],
+    ...rssResults.map(
+      result => ({
 
-      attempts:
-        attempts.map(x => ({
-          provider: x.provider,
-          ok: x.ok,
-          status: x.status,
-          detail: x.detail
-        }))
-    };
-  }
+        provider:
+          result.provider,
+
+        ok:
+          result.ok,
+
+        status:
+          result.status,
+
+        count:
+          result.items.length,
+
+        detail:
+          result.detail
+
+      })
+    ),
+
+    {
+
+      provider:
+        bseResult.provider,
+
+      ok:
+        bseResult.ok,
+
+      status:
+        bseResult.status,
+
+      count:
+        bseResult.items.length,
+
+      detail:
+        bseResult.detail
+    }
+
+  ];
 
 
   return {
 
-    ok: true,
+    ok:
+      finalItems.length > 0,
 
     source:
-      "Google News RSS + GDELT + Bing News RSS",
+      "Google News RSS + GDELT + Bing News RSS + BSE",
 
     keyword,
 
+    timeWindow:
+      "last 6 hours",
+
     count:
-      items.length,
+      finalItems.length,
 
-    items,
+    items:
+      finalItems,
 
-    attempts:
-      attempts.map(x => ({
-        provider:
-          x.provider,
+    attempts
 
-        ok:
-          x.ok,
-
-        status:
-          x.status,
-
-        count:
-          x.items.length,
-
-        detail:
-          x.detail
-      }))
   };
 }
 
 
-/* ================= REQUEST HANDLER ================= */
+/* =========================================================
+   REQUEST HANDLER
+   ========================================================= */
 
 async function handle(request) {
 
@@ -584,6 +931,7 @@ async function handle(request) {
     request.method ===
     "OPTIONS"
   ) {
+
     return new Response(
       null,
       {
@@ -603,7 +951,9 @@ async function handle(request) {
     url.pathname;
 
 
-  /* ================= HEALTH ================= */
+  /* =======================================================
+     HEALTH
+     ======================================================= */
 
   if (
     path === "/" ||
@@ -618,7 +968,7 @@ async function handle(request) {
         "MarketFeed RSS Proxy",
 
       version:
-        "9-multisource",
+        "12-base-pre-bse-isolation",
 
       endpoints: [
         "/rss?url=RSS_URL",
@@ -628,14 +978,23 @@ async function handle(request) {
       keywordProviders: [
         "Google News RSS",
         "GDELT News RSS",
-        "Bing News RSS"
-      ]
+        "Bing News RSS",
+        "BSE Corporate Announcements"
+      ],
+
+      newsWindow:
+        "last 6 hours",
+
+      maxResults:
+        100
 
     });
   }
 
 
-  /* ================= KEYWORD NEWS ================= */
+  /* =======================================================
+     NEWS
+     ======================================================= */
 
   if (
     path === "/news"
@@ -643,8 +1002,9 @@ async function handle(request) {
 
     const keyword =
       (
-        url.searchParams.get("q") ||
-        ""
+        url.searchParams.get(
+          "q"
+        ) || ""
       ).trim();
 
 
@@ -662,14 +1022,16 @@ async function handle(request) {
 
 
     return json(
-      await keywordNews(
+      await getNews(
         keyword
       )
     );
   }
 
 
-  /* ================= EXISTING RSS ================= */
+  /* =======================================================
+     GENERIC RSS
+     ======================================================= */
 
   if (
     path === "/rss"
@@ -677,8 +1039,9 @@ async function handle(request) {
 
     const target =
       (
-        url.searchParams.get("url") ||
-        ""
+        url.searchParams.get(
+          "url"
+        ) || ""
       ).trim();
 
 
@@ -697,6 +1060,7 @@ async function handle(request) {
 
     let targetURL;
 
+
     try {
 
       targetURL =
@@ -710,6 +1074,7 @@ async function handle(request) {
           targetURL.protocol
         )
       ) {
+
         throw new Error(
           "Only HTTP/HTTPS URLs are allowed"
         );
@@ -739,7 +1104,9 @@ async function handle(request) {
         );
 
 
-      if (!response.ok) {
+      if (
+        !response.ok
+      ) {
 
         return json(
           {
@@ -763,11 +1130,13 @@ async function handle(request) {
       const items =
         parseRSS(
           text,
-          50
+          100
         );
 
 
-      if (!items.length) {
+      if (
+        !items.length
+      ) {
 
         return json(
           {
@@ -801,7 +1170,8 @@ async function handle(request) {
 
       });
 
-    } catch (err) {
+
+    } catch (error) {
 
       return json(
         {
@@ -812,8 +1182,8 @@ async function handle(request) {
 
           detail:
             String(
-              err?.message ||
-              err
+              error?.message ||
+              error
             ),
 
           url:
@@ -825,7 +1195,9 @@ async function handle(request) {
   }
 
 
-  /* ================= NOT FOUND ================= */
+  /* =======================================================
+     NOT FOUND
+     ======================================================= */
 
   return json(
     {
@@ -837,6 +1209,10 @@ async function handle(request) {
   );
 }
 
+
+/* =========================================================
+   CLOUDFLARE WORKER
+   ========================================================= */
 
 export default {
 
