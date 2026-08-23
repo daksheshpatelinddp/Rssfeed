@@ -1,15 +1,20 @@
 /*
- * MarketFeed RSS Worker - V13 BSE DIAGNOSTIC
+ * MarketFeed RSS Worker - V14 BSE TCS TEST
  *
  * BSE ONLY
  *
- * Purpose:
- *   Diagnose why TCS keyword matching returns 0.
+ * TEST:
+ *   /news?q=TCS
+ *
+ * TCS:
+ *   BSE Scrip Code = 532540
  *
  * Logic:
- *   BSE today -> last 6 hours -> show actual BSE fields
- *
- * Google / Bing / GDELT are intentionally removed.
+ *   1. Get today's BSE announcements
+ *   2. Keep only last 6 hours
+ *   3. Match SCRIP_CD = 532540 for TCS
+ *   4. Return newest first
+ *   5. Maximum 20 results
  */
 
 
@@ -26,7 +31,7 @@ const CORS = {
 
 
 /* =========================================================
-   JSON RESPONSE
+   JSON
    ========================================================= */
 
 function json(data, status = 200) {
@@ -42,26 +47,6 @@ function json(data, status = 200) {
       }
     }
   );
-
-}
-
-
-/* =========================================================
-   CLEAN TEXT
-   ========================================================= */
-
-function cleanText(value) {
-
-  if (value == null) {
-    return "";
-  }
-
-  return String(value)
-    .replace(/<!\[CDATA\[/gi, "")
-    .replace(/\]\]>/gi, "")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 
 }
 
@@ -173,189 +158,102 @@ async function fetchBSEPage(
   page
 ) {
 
-  const url =
-    bseUrl(
-      date,
-      page
+  const response =
+    await fetch(
+      bseUrl(
+        date,
+        page
+      ),
+      {
+        method: "GET",
+
+        headers: {
+
+          "User-Agent":
+            "Mozilla/5.0 " +
+            "(Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) " +
+            "Chrome/134.0.0.0 " +
+            "Safari/537.36",
+
+          "Accept":
+            "application/json, " +
+            "text/plain, */*",
+
+          "Accept-Language":
+            "en-IN,en;q=0.9",
+
+          "Referer":
+            "https://www.bseindia.com/",
+
+          "Origin":
+            "https://www.bseindia.com"
+
+        },
+
+        redirect: "follow"
+      }
     );
+
+
+  const text =
+    await response.text();
+
+
+  if (!response.ok) {
+
+    throw new Error(
+      "BSE HTTP " +
+      response.status +
+      ": " +
+      text.slice(0, 300)
+    );
+
+  }
+
+
+  let data;
 
   try {
 
-    const response =
-      await fetch(
-        url,
-        {
-          method: "GET",
+    data =
+      JSON.parse(text);
 
-          headers: {
+  } catch (error) {
 
-            "User-Agent":
-              "Mozilla/5.0 " +
-              "(Windows NT 10.0; Win64; x64) " +
-              "AppleWebKit/537.36 " +
-              "(KHTML, like Gecko) " +
-              "Chrome/134.0.0.0 " +
-              "Safari/537.36",
+    throw new Error(
+      "BSE returned non-JSON: " +
+      text.slice(0, 300)
+    );
 
-            "Accept":
-              "application/json, " +
-              "text/plain, */*",
-
-            "Accept-Language":
-              "en-IN,en;q=0.9",
-
-            "Referer":
-              "https://www.bseindia.com/",
-
-            "Origin":
-              "https://www.bseindia.com"
-
-          },
-
-          redirect: "follow"
-        }
-      );
+  }
 
 
-    const text =
-      await response.text();
+  const rows =
+    Array.isArray(data?.Table)
+      ? data.Table
+      : [];
 
 
-    if (!response.ok) {
+  return {
 
-      return {
+    rows,
 
-        ok: false,
-
-        status:
-          response.status,
-
-        items: [],
-
-        totalPages: 0,
-
-        detail:
-          "BSE HTTP " +
-          response.status +
-          ": " +
-          text.slice(0, 300)
-
-      };
-
-    }
-
-
-    let data;
-
-    try {
-
-      data =
-        JSON.parse(text);
-
-    } catch (error) {
-
-      return {
-
-        ok: false,
-
-        status:
-          response.status,
-
-        items: [],
-
-        totalPages: 0,
-
-        detail:
-          "BSE returned non-JSON: " +
-          text.slice(0, 300)
-
-      };
-
-    }
-
-
-    const rows =
-      Array.isArray(data?.Table)
-        ? data.Table
-        : [];
-
-
-    const totalPages =
+    totalPages:
       rows.length
         ? Number(
             rows[0]?.TotalPageCnt
           ) || 0
-        : 0;
+        : 0
 
-
-    return {
-
-      ok: true,
-
-      status:
-        response.status,
-
-      items:
-        rows,
-
-      totalPages,
-
-      detail:
-        "BSE page " +
-        page +
-        ": " +
-        rows.length +
-        " items"
-
-    };
-
-
-  } catch (error) {
-
-    return {
-
-      ok: false,
-
-      status: 0,
-
-      items: [],
-
-      totalPages: 0,
-
-      detail:
-        "BSE fetch exception: " +
-        String(
-          error?.message ||
-          error
-        )
-
-    };
-
-  }
+  };
 
 }
 
 
 /* =========================================================
-   GET BSE DATE FIELD
-   ========================================================= */
-
-function getBSEDate(row) {
-
-  return (
-    row?.DissemDT ||
-    row?.News_submission_dt ||
-    row?.DT_TM ||
-    row?.NEWS_DT ||
-    row?.News_submission_dt_tm ||
-    ""
-  );
-
-}
-
-
-/* =========================================================
-   PARSE BSE DATE
+   BSE DATE PARSER
    ========================================================= */
 
 function parseBSEDate(value) {
@@ -370,38 +268,25 @@ function parseBSEDate(value) {
 
 
   /*
-   * Try JavaScript parsing.
-   */
-
-  let timestamp =
-    Date.parse(text);
-
-
-  if (
-    Number.isFinite(timestamp)
-  ) {
-
-    return timestamp;
-
-  }
-
-
-  /*
-   * DD/MM/YYYY HH:mm:ss
+   * BSE current format:
+   *
+   * 2026-08-23T13:51:31.72
+   *
+   * Treat it as IST.
    */
 
   let match =
     text.match(
-      /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?/
     );
 
 
   if (match) {
 
     return Date.UTC(
-      Number(match[3]),
-      Number(match[2]) - 1,
       Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
       Number(match[4]) - 5,
       Number(match[5]) - 30,
       Number(match[6] || 0)
@@ -411,116 +296,170 @@ function parseBSEDate(value) {
 
 
   /*
-   * DD-MM-YYYY HH:mm:ss
+   * Fallback to normal parsing.
    */
 
-  match =
-    text.match(
-      /^(\d{2})-(\d{2})-(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
-    );
+  const timestamp =
+    Date.parse(text);
 
 
-  if (match) {
-
-    return Date.UTC(
-      Number(match[3]),
-      Number(match[2]) - 1,
-      Number(match[1]),
-      Number(match[4]) - 5,
-      Number(match[5]) - 30,
-      Number(match[6] || 0)
-    );
-
-  }
-
-
-  /*
-   * YYYY-MM-DD HH:mm:ss
-   */
-
-  match =
-    text.match(
-      /^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
-    );
-
-
-  if (match) {
-
-    return Date.UTC(
-      Number(match[1]),
-      Number(match[2]) - 1,
-      Number(match[3]),
-      Number(match[4]) - 5,
-      Number(match[5]) - 30,
-      Number(match[6] || 0)
-    );
-
-  }
-
-
-  return NaN;
+  return Number.isFinite(timestamp)
+    ? timestamp
+    : NaN;
 
 }
 
 
 /* =========================================================
-   DIAGNOSTIC RECORD
+   TCS TEST CONFIGURATION
    ========================================================= */
 
-function diagnosticRow(row) {
+const COMPANY_MAP = {
+
+  TCS: {
+
+    scripCode:
+      "532540",
+
+    name:
+      "Tata Consultancy Services Ltd"
+
+  }
+
+};
+
+
+/* =========================================================
+   COMPANY RESOLUTION
+   ========================================================= */
+
+function resolveCompany(
+  keyword
+) {
+
+  const key =
+    String(
+      keyword || ""
+    )
+      .trim()
+      .toUpperCase();
+
+
+  return (
+    COMPANY_MAP[key] ||
+    null
+  );
+
+}
+
+
+/* =========================================================
+   NORMALIZE BSE ITEM
+   ========================================================= */
+
+function normalizeBSE(row) {
+
+  const published =
+    row?.DissemDT ||
+    row?.News_submission_dt ||
+    row?.DT_TM ||
+    row?.NEWS_DT ||
+    "";
+
+
+  const newsId =
+    String(
+      row?.NEWSID ||
+      ""
+    );
+
+
+  let link = "";
+
+
+  if (
+    row?.ATTACHMENTNAME
+  ) {
+
+    link =
+      "https://www.bseindia.com/" +
+      "xml-data/corpfiling/" +
+      "AttachLive/" +
+      row.ATTACHMENTNAME;
+
+  } else if (
+    row?.NSURL
+  ) {
+
+    link =
+      row.NSURL;
+
+  } else if (
+    newsId
+  ) {
+
+    link =
+      "https://www.bseindia.com/" +
+      "stockinfo/anndet.aspx?" +
+      "newsid=" +
+      encodeURIComponent(
+        newsId
+      );
+
+  }
+
 
   return {
 
-    SCRIP_CD:
-      row?.SCRIP_CD || "",
+    title:
+      String(
+        row?.NEWSSUB ||
+        row?.HEADLINE ||
+        ""
+      ).trim(),
 
-    SLONGNAME:
-      cleanText(
-        row?.SLONGNAME || ""
-      ),
+    link,
 
-    NEWSSUB:
-      cleanText(
-        row?.NEWSSUB || ""
-      ),
+    description:
+      String(
+        row?.MORE ||
+        row?.HEADLINE ||
+        ""
+      ).trim(),
 
-    HEADLINE:
-      cleanText(
-        row?.HEADLINE || ""
-      ),
+    published,
 
-    CATEGORYNAME:
-      cleanText(
-        row?.CATEGORYNAME || ""
-      ),
+    guid:
+      newsId ||
+      link,
 
-    NEWSID:
-      row?.NEWSID || "",
+    source:
+      "BSE Corporate Announcements",
 
-    ATTACHMENTNAME:
-      row?.ATTACHMENTNAME || "",
+    company:
+      String(
+        row?.SLONGNAME ||
+        ""
+      ).trim(),
 
-    NSURL:
-      row?.NSURL || "",
+    scrip:
+      String(
+        row?.SCRIP_CD ||
+        ""
+      ).trim(),
 
-    DissemDT:
-      row?.DissemDT || "",
+    category:
+      String(
+        row?.CATEGORYNAME ||
+        ""
+      ).trim(),
 
-    News_submission_dt:
-      row?.News_submission_dt || "",
+    bseNewsId:
+      newsId,
 
-    DT_TM:
-      row?.DT_TM || "",
-
-    NEWS_DT:
-      row?.NEWS_DT || "",
-
-    News_submission_dt_tm:
-      row?.News_submission_dt_tm || "",
-
-    MORE:
-      cleanText(
-        row?.MORE || ""
+    timestamp:
+      parseBSEDate(
+        published
       )
 
   };
@@ -529,12 +468,91 @@ function diagnosticRow(row) {
 
 
 /* =========================================================
-   BSE NEWS
+   DEDUPLICATE
    ========================================================= */
 
-async function fetchBSENews(
+function dedupe(items) {
+
+  const seen =
+    new Set();
+
+  const result =
+    [];
+
+
+  for (
+    const item
+    of items
+  ) {
+
+    const key =
+      item.bseNewsId ||
+      item.link ||
+      (
+        item.title +
+        "|" +
+        item.published
+      );
+
+
+    if (
+      seen.has(key)
+    ) {
+
+      continue;
+
+    }
+
+
+    seen.add(key);
+
+    result.push(item);
+
+  }
+
+
+  return result;
+
+}
+
+
+/* =========================================================
+   FETCH TCS NEWS
+   ========================================================= */
+
+async function fetchCompanyNews(
   keyword
 ) {
+
+  const company =
+    resolveCompany(
+      keyword
+    );
+
+
+  if (!company) {
+
+    return {
+
+      ok: false,
+
+      source:
+        "BSE Corporate Announcements",
+
+      keyword,
+
+      error:
+        "Company is not configured yet",
+
+      configuredCompanies:
+        Object.keys(
+          COMPANY_MAP
+        )
+
+    };
+
+  }
+
 
   const now =
     Date.now();
@@ -545,109 +563,36 @@ async function fetchBSENews(
     6 * 60 * 60 * 1000;
 
 
-  const date =
+  const today =
     bseDate(0);
 
 
-  const attempts =
-    [];
-
-
-  let allRows =
-    [];
-
-
-  /*
-   * Only today's first 5 pages.
-   */
-
-  for (
-    let page = 1;
-    page <= 5;
-    page++
-  ) {
-
-    const result =
-      await fetchBSEPage(
-        date,
-        page
-      );
-
-
-    attempts.push({
-
-      date,
-
-      page,
-
-      ok:
-        result.ok,
-
-      status:
-        result.status,
-
-      count:
-        result.items.length,
-
-      totalPages:
-        result.totalPages,
-
-      detail:
-        result.detail
-
-    });
-
-
-    if (
-      !result.ok
-    ) {
-
-      break;
-
-    }
-
-
-    allRows.push(
-      ...result.items
+  const result =
+    await fetchBSEPage(
+      today,
+      1
     );
 
 
-    if (
-      !result.items.length
-    ) {
-
-      break;
-
-    }
-
-
-    if (
-      result.totalPages > 0 &&
-      page >= result.totalPages
-    ) {
-
-      break;
-
-    }
-
-  }
+  const allRows =
+    result.rows;
 
 
   /*
-   * Filter records to last 6 hours.
+   * First filter by time.
    */
 
   const recentRows =
     allRows.filter(
       row => {
 
-        const dateValue =
-          getBSEDate(row);
-
-
         const timestamp =
           parseBSEDate(
-            dateValue
+            row?.DissemDT ||
+            row?.News_submission_dt ||
+            row?.DT_TM ||
+            row?.NEWS_DT ||
+            ""
           );
 
 
@@ -662,42 +607,99 @@ async function fetchBSENews(
 
 
   /*
-   * VERY IMPORTANT:
-   *
-   * We are NOT filtering by TCS yet.
-   *
-   * We want to see exactly what BSE
-   * returned during the last 6 hours.
+   * Then filter by exact BSE
+   * scrip code.
    */
 
-  const diagnostic =
-    recentRows
+  const companyRows =
+    recentRows.filter(
+      row =>
+        String(
+          row?.SCRIP_CD ||
+          ""
+        ).trim() ===
+        company.scripCode
+    );
+
+
+  /*
+   * Normalize.
+   */
+
+  let items =
+    companyRows
+      .map(
+        normalizeBSE
+      );
+
+
+  /*
+   * Deduplicate.
+   */
+
+  items =
+    dedupe(
+      items
+    );
+
+
+  /*
+   * Newest first.
+   */
+
+  items.sort(
+    (a, b) =>
+      b.timestamp -
+      a.timestamp
+  );
+
+
+  /*
+   * Maximum 20.
+   */
+
+  items =
+    items
       .slice(0, 20)
       .map(
-        diagnosticRow
+        item => {
+
+          const copy =
+            { ...item };
+
+          delete copy.timestamp;
+
+          return copy;
+
+        }
       );
 
 
   return {
 
     ok:
-      true,
+      items.length > 0,
 
     source:
       "BSE Corporate Announcements",
 
     keyword,
 
+    company:
+      company.name,
+
+    bseScripCode:
+      company.scripCode,
+
     timeWindow:
       "last 6 hours",
 
     count:
-      diagnostic.length,
+      items.length,
 
-    items:
-      diagnostic,
+    items,
 
-    diagnosticInfo: {
+    diagnostic: {
 
       totalBSERows:
         allRows.length,
@@ -705,23 +707,27 @@ async function fetchBSENews(
       rowsLast6Hours:
         recentRows.length,
 
-      rowsShown:
-        diagnostic.length,
+      matchingCompanyRows:
+        companyRows.length,
 
-      now:
-        new Date(
-          now
-        ).toISOString(),
+      finalCount:
+        items.length,
 
-      sixHoursAgo:
+      bseDate:
+        today,
+
+      windowStart:
         new Date(
           sixHoursAgo
         ).toISOString(),
 
-      bseDate:
-        date,
+      windowEnd:
+        new Date(
+          now
+        ).toISOString(),
 
-      attempts
+      totalPages:
+        result.totalPages
 
     }
 
@@ -781,19 +787,22 @@ async function handle(
         "MarketFeed RSS Proxy",
 
       version:
-        "13-bse-diagnostic",
+        "14-bse-tcs-test",
 
       provider:
         "BSE Corporate Announcements",
 
-      endpoint:
-        "/news?q=KEYWORD",
+      testCompany:
+        "Tata Consultancy Services Ltd",
+
+      testScrip:
+        "532540",
 
       window:
         "last 6 hours",
 
-      keywordFiltering:
-        "temporarily disabled"
+      endpoint:
+        "/news?q=TCS"
 
     });
 
@@ -835,7 +844,7 @@ async function handle(
     try {
 
       return json(
-        await fetchBSENews(
+        await fetchCompanyNews(
           keyword
         )
       );
