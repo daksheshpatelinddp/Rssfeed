@@ -1,17 +1,32 @@
 /*
- * MarketFeed RSS Worker - V11 BSE DIAGNOSTIC
+ * MarketFeed RSS Worker - V12 BSE ONLY
+ *
+ * TEMPORARY BSE-ONLY VERSION
  *
  * Sources:
- *   Google News RSS
- *   GDELT News RSS
- *   Bing News RSS
- *   BSE Corporate Announcements
+ *   BSE Corporate Announcements ONLY
  *
- * Endpoints:
- *   /
+ * Endpoint:
  *   /news?q=TCS
- *   /rss?url=RSS_URL
+ *
+ * Current purpose:
+ *   Diagnose and fix BSE news retrieval before
+ *   adding Google News, GDELT and Bing again.
+ *
+ * Logic:
+ *   1. Request BSE announcement pages
+ *   2. Read BSE records
+ *   3. Filter to last 6 hours
+ *   4. Match requested keyword/company/scrip
+ *   5. Remove duplicates
+ *   6. Sort newest first
+ *   7. Return maximum 20 items
  */
+
+
+/* =========================================================
+   CORS
+   ========================================================= */
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -26,6 +41,7 @@ const CORS = {
    ========================================================= */
 
 function json(data, status = 200) {
+
   return new Response(
     JSON.stringify(data),
     {
@@ -37,11 +53,12 @@ function json(data, status = 200) {
       }
     }
   );
+
 }
 
 
 /* =========================================================
-   TEXT
+   TEXT HELPERS
    ========================================================= */
 
 function cleanText(value) {
@@ -56,270 +73,18 @@ function cleanText(value) {
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
 }
 
 
-function decodeEntities(value) {
+function normalizeText(value) {
 
-  return String(value || "")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&#x27;/gi, "'")
-    .replace(
-      /&#(\d+);/g,
-      (_, n) =>
-        String.fromCharCode(
-          Number(n)
-        )
-    )
-    .replace(
-      /&#x([0-9a-f]+);/gi,
-      (_, n) =>
-        String.fromCharCode(
-          parseInt(n, 16)
-        )
-    );
-}
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-
-function tagValue(block, tag) {
-
-  const re =
-    new RegExp(
-      `<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`,
-      "i"
-    );
-
-  const match =
-    block.match(re);
-
-  return match
-    ? decodeEntities(
-        cleanText(match[1])
-      )
-    : "";
-}
-
-
-function attrValue(
-  block,
-  tag,
-  attr
-) {
-
-  const re =
-    new RegExp(
-      `<${tag}\\b[^>]*\\s${attr}\\s*=\\s*["']([^"']+)["'][^>]*\\/?>`,
-      "i"
-    );
-
-  const match =
-    block.match(re);
-
-  return match
-    ? decodeEntities(match[1])
-    : "";
-}
-
-
-/* =========================================================
-   RSS PARSER
-   ========================================================= */
-
-function parseRSS(
-  text,
-  limit = 50
-) {
-
-  const items = [];
-
-  const rss =
-    text.match(
-      /<item\b[\s\S]*?<\/item>/gi
-    ) || [];
-
-  const atom =
-    text.match(
-      /<entry\b[\s\S]*?<\/entry>/gi
-    ) || [];
-
-  const blocks =
-    rss.length
-      ? rss
-      : atom;
-
-  for (
-    const block
-    of blocks.slice(0, limit)
-  ) {
-
-    const title =
-      tagValue(
-        block,
-        "title"
-      );
-
-    let link =
-      tagValue(
-        block,
-        "link"
-      );
-
-    if (!link) {
-
-      link =
-        attrValue(
-          block,
-          "link",
-          "href"
-        );
-    }
-
-    const description =
-      tagValue(
-        block,
-        "description"
-      ) ||
-      tagValue(
-        block,
-        "summary"
-      ) ||
-      tagValue(
-        block,
-        "content"
-      );
-
-    const published =
-      tagValue(
-        block,
-        "pubDate"
-      ) ||
-      tagValue(
-        block,
-        "published"
-      ) ||
-      tagValue(
-        block,
-        "updated"
-      ) ||
-      tagValue(
-        block,
-        "dc:date"
-      );
-
-    const guid =
-      tagValue(
-        block,
-        "guid"
-      ) ||
-      tagValue(
-        block,
-        "id"
-      );
-
-    if (
-      title ||
-      link
-    ) {
-
-      items.push({
-        title,
-        link,
-        description,
-        published,
-        guid
-      });
-
-    }
-  }
-
-  return items;
-}
-
-
-/* =========================================================
-   RSS FETCH
-   ========================================================= */
-
-async function fetchRSS(url) {
-
-  const response =
-    await fetch(
-      url,
-      {
-        method: "GET",
-
-        headers: {
-          "User-Agent":
-            "MarketFeed/11.0",
-
-          "Accept":
-            "application/rss+xml, " +
-            "application/atom+xml, " +
-            "application/xml, " +
-            "text/xml, */*"
-        },
-
-        redirect:
-          "follow"
-      }
-    );
-
-  return {
-    response,
-    text:
-      await response.text()
-  };
-}
-
-
-/* =========================================================
-   NEWS SOURCE URLS
-   ========================================================= */
-
-function googleUrl(
-  keyword
-) {
-
-  return (
-    "https://news.google.com/rss/search?q=" +
-    encodeURIComponent(keyword) +
-    "&hl=en-IN" +
-    "&gl=IN" +
-    "&ceid=IN:en"
-  );
-}
-
-
-function bingUrl(
-  keyword
-) {
-
-  return (
-    "https://www.bing.com/news/search?q=" +
-    encodeURIComponent(keyword) +
-    "&format=rss"
-  );
-}
-
-
-function gdeltUrl(
-  keyword
-) {
-
-  return (
-    "https://api.gdeltproject.org/api/v2/doc/doc?" +
-    "query=" +
-    encodeURIComponent(keyword) +
-    "&mode=artlist" +
-    "&maxrecords=50" +
-    "&timespan=1week" +
-    "&sort=datedesc" +
-    "&format=rssarchive"
-  );
 }
 
 
@@ -327,23 +92,19 @@ function gdeltUrl(
    BSE DATE
    ========================================================= */
 
-function bseDate(
-  daysBack = 0
-) {
+function bseDate(daysBack = 0) {
 
   const date =
     new Date(
       Date.now() -
-      daysBack *
-      86400000
+      daysBack * 86400000
     );
 
   const parts =
     new Intl.DateTimeFormat(
       "en-GB",
       {
-        timeZone:
-          "Asia/Kolkata",
+        timeZone: "Asia/Kolkata",
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
@@ -352,13 +113,11 @@ function bseDate(
 
   const result = {};
 
-  for (
-    const part
-    of parts
-  ) {
+  for (const part of parts) {
 
     result[part.type] =
       part.value;
+
   }
 
   return (
@@ -366,6 +125,7 @@ function bseDate(
     result.month +
     result.day
   );
+
 }
 
 
@@ -373,10 +133,7 @@ function bseDate(
    BSE URL
    ========================================================= */
 
-function bseUrl(
-  date,
-  page
-) {
+function bseUrl(date, page) {
 
   const params =
     new URLSearchParams();
@@ -427,6 +184,7 @@ function bseUrl(
     "AnnSubCategoryGetData/w?" +
     params.toString()
   );
+
 }
 
 
@@ -475,10 +233,12 @@ async function fetchBSEPage(
 
             "Origin":
               "https://www.bseindia.com"
+
           },
 
           redirect:
             "follow"
+
         }
       );
 
@@ -487,9 +247,7 @@ async function fetchBSEPage(
       await response.text();
 
 
-    if (
-      !response.ok
-    ) {
+    if (!response.ok) {
 
       return {
 
@@ -500,12 +258,16 @@ async function fetchBSEPage(
 
         items: [],
 
+        totalPages: 0,
+
         detail:
           "BSE HTTP " +
           response.status +
           ": " +
           text.slice(0, 300)
+
       };
+
     }
 
 
@@ -527,17 +289,19 @@ async function fetchBSEPage(
 
         items: [],
 
+        totalPages: 0,
+
         detail:
           "BSE returned non-JSON: " +
           text.slice(0, 300)
+
       };
+
     }
 
 
     const rows =
-      Array.isArray(
-        data?.Table
-      )
+      Array.isArray(data?.Table)
         ? data.Table
         : [];
 
@@ -545,8 +309,7 @@ async function fetchBSEPage(
     const totalPages =
       rows.length
         ? Number(
-            rows[0]
-              ?.TotalPageCnt
+            rows[0]?.TotalPageCnt
           ) || 0
         : 0;
 
@@ -569,6 +332,7 @@ async function fetchBSEPage(
         ": " +
         rows.length +
         " items"
+
     };
 
 
@@ -582,6 +346,8 @@ async function fetchBSEPage(
 
       items: [],
 
+      totalPages: 0,
+
       detail:
         "BSE fetch exception: " +
         String(
@@ -590,7 +356,205 @@ async function fetchBSEPage(
         )
 
     };
+
   }
+
+}
+
+
+/* =========================================================
+   BSE PUBLISHED DATE
+   ========================================================= */
+
+function getBSEDate(row) {
+
+  return (
+    row?.DissemDT ||
+    row?.News_submission_dt ||
+    row?.DT_TM ||
+    row?.NEWS_DT ||
+    row?.News_submission_dt_tm ||
+    ""
+  );
+
+}
+
+
+/* =========================================================
+   PARSE BSE DATE
+   ========================================================= */
+
+function parseBSEDate(value) {
+
+  if (!value) {
+    return NaN;
+  }
+
+
+  let text =
+    String(value)
+      .trim();
+
+
+  /*
+   * Try normal JavaScript date parsing first.
+   */
+
+  let timestamp =
+    Date.parse(text);
+
+
+  if (
+    Number.isFinite(timestamp)
+  ) {
+
+    return timestamp;
+
+  }
+
+
+  /*
+   * BSE sometimes uses:
+   *
+   * DD/MM/YYYY HH:mm:ss
+   */
+
+  let match =
+    text.match(
+      /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
+    );
+
+
+  if (match) {
+
+    const day =
+      Number(match[1]);
+
+    const month =
+      Number(match[2]) - 1;
+
+    const year =
+      Number(match[3]);
+
+    const hour =
+      Number(match[4]);
+
+    const minute =
+      Number(match[5]);
+
+    const second =
+      Number(match[6] || 0);
+
+
+    /*
+     * BSE time is IST.
+     * Convert IST to UTC.
+     */
+
+    return Date.UTC(
+      year,
+      month,
+      day,
+      hour - 5,
+      minute - 30,
+      second
+    );
+
+  }
+
+
+  /*
+   * Try:
+   *
+   * DD-MM-YYYY HH:mm:ss
+   */
+
+  match =
+    text.match(
+      /^(\d{2})-(\d{2})-(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
+    );
+
+
+  if (match) {
+
+    const day =
+      Number(match[1]);
+
+    const month =
+      Number(match[2]) - 1;
+
+    const year =
+      Number(match[3]);
+
+    const hour =
+      Number(match[4]);
+
+    const minute =
+      Number(match[5]);
+
+    const second =
+      Number(match[6] || 0);
+
+
+    return Date.UTC(
+      year,
+      month,
+      day,
+      hour - 5,
+      minute - 30,
+      second
+    );
+
+  }
+
+
+  /*
+   * Try:
+   *
+   * YYYY-MM-DD HH:mm:ss
+   */
+
+  match =
+    text.match(
+      /^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/
+    );
+
+
+  if (match) {
+
+    const year =
+      Number(match[1]);
+
+    const month =
+      Number(match[2]) - 1;
+
+    const day =
+      Number(match[3]);
+
+    const hour =
+      Number(match[4]);
+
+    const minute =
+      Number(match[5]);
+
+    const second =
+      Number(match[6] || 0);
+
+
+    return Date.UTC(
+      year,
+      month,
+      day,
+      hour - 5,
+      minute - 30,
+      second
+    );
+
+  }
+
+
+  return NaN;
+
 }
 
 
@@ -598,35 +562,38 @@ async function fetchBSEPage(
    BSE ITEM NORMALIZATION
    ========================================================= */
 
-function normalizeBSE(
-  row
-) {
+function normalizeBSE(row) {
 
   const title =
     cleanText(
       row?.NEWSSUB ||
       row?.HEADLINE ||
+      row?.NEWS_SUBJECT ||
       ""
     );
+
 
   const description =
     cleanText(
       row?.MORE ||
       row?.HEADLINE ||
+      row?.NEWS_SUBJECT ||
       ""
     );
 
+
   const published =
-    row?.DissemDT ||
-    row?.News_submission_dt ||
-    row?.DT_TM ||
-    "";
+    getBSEDate(row);
+
 
   const company =
     cleanText(
       row?.SLONGNAME ||
+      row?.LONGNAME ||
+      row?.SCRIP_NAME ||
       ""
     );
+
 
   const category =
     cleanText(
@@ -634,17 +601,22 @@ function normalizeBSE(
       ""
     );
 
+
   const scrip =
     String(
       row?.SCRIP_CD ||
+      row?.SCRIPCODE ||
       ""
     );
+
 
   const newsId =
     String(
       row?.NEWSID ||
+      row?.NewsID ||
       ""
     );
+
 
   let link = "";
 
@@ -677,6 +649,7 @@ function normalizeBSE(
       encodeURIComponent(
         newsId
       );
+
   }
 
 
@@ -692,7 +665,8 @@ function normalizeBSE(
 
     guid:
       newsId ||
-      link,
+      link ||
+      title,
 
     source:
       "BSE Corporate Announcements",
@@ -704,8 +678,15 @@ function normalizeBSE(
     category,
 
     bseNewsId:
-      newsId
+      newsId,
+
+    bseDateMs:
+      parseBSEDate(
+        published
+      )
+
   };
+
 }
 
 
@@ -719,37 +700,48 @@ function bseMatches(
 ) {
 
   const query =
-    String(
-      keyword || ""
-    )
-      .toLowerCase()
-      .trim();
+    normalizeText(
+      keyword
+    );
+
 
   if (!query) {
+
     return true;
+
   }
 
 
   const text =
-    [
-      item.title,
-      item.description,
-      item.company,
-      item.scrip,
-      item.category
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
+    normalizeText(
+      [
+        item.title,
+        item.description,
+        item.company,
+        item.scrip,
+        item.category
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
 
+
+  /*
+   * Exact phrase first.
+   */
 
   if (
     text.includes(query)
   ) {
 
     return true;
+
   }
 
+
+  /*
+   * Then require all words.
+   */
 
   const words =
     query
@@ -760,344 +752,28 @@ function bseMatches(
       );
 
 
-  return (
-    words.length > 0 &&
-    words.every(
-      word =>
-        text.includes(word)
-    )
+  if (!words.length) {
+
+    return false;
+
+  }
+
+
+  return words.every(
+    word =>
+      text.includes(word)
   );
+
 }
 
 
 /* =========================================================
-   BSE NEWS
+   DEDUPLICATION
    ========================================================= */
 
-async function fetchBSENews(
-  keyword
-) {
+function dedupe(items) {
 
-  const dates = [
-    bseDate(0),
-    bseDate(1)
-  ];
-
-
-  const attempts = [];
-
-  let allRows = [];
-
-
-  /*
-   * Fetch first few BSE pages.
-   */
-
-  for (
-    const date
-    of dates
-  ) {
-
-    const pages = [
-      1,
-      2,
-      3,
-      4,
-      5
-    ];
-
-
-    const results =
-      await Promise.all(
-        pages.map(
-          page =>
-            fetchBSEPage(
-              date,
-              page
-            )
-        )
-      );
-
-
-    for (
-      const result
-      of results
-    ) {
-
-      attempts.push({
-
-        date,
-
-        ok:
-          result.ok,
-
-        status:
-          result.status,
-
-        detail:
-          result.detail
-
-      });
-
-
-      if (
-        result.ok &&
-        result.items.length
-      ) {
-
-        allRows.push(
-          ...result.items
-        );
-
-      }
-
-    }
-
-
-    const anySuccess =
-      results.some(
-        x => x.ok
-      );
-
-
-    if (
-      !anySuccess
-    ) {
-
-      break;
-    }
-
-  }
-
-
-  /*
-   * TEMPORARY DIAGNOSTIC:
-   *
-   * Do NOT filter by keyword yet.
-   *
-   * We need to inspect the actual
-   * BSE fields first.
-   */
-
-  const items =
-    allRows
-      .map(
-        normalizeBSE
-      )
-      .filter(
-        item =>
-          item.title ||
-          item.link
-      );
-
-
-  return {
-
-    ok:
-      items.length > 0,
-
-    provider:
-      "BSE Corporate Announcements",
-
-    keyword,
-
-    count:
-      items.length,
-
-    items,
-
-    attempts,
-
-    /*
-     * Show first 3 RAW BSE records.
-     * This is temporary and will be
-     * removed after diagnosis.
-     */
-
-    debugRaw:
-  allRows.slice(0, 3).map(row => ({
-    SCRIP_CD: row.SCRIP_CD,
-    SLONGNAME: row.SLONGNAME,
-    NEWSSUB: row.NEWSSUB,
-    HEADLINE: row.HEADLINE,
-    NEWSID: row.NEWSID,
-    ATTACHMENTNAME: row.ATTACHMENTNAME,
-    NSURL: row.NSURL,
-    DissemDT: row.DissemDT
-  }))
-
-  };
-}
-
-
-/* =========================================================
-   GENERIC RSS PROVIDER
-   ========================================================= */
-
-async function fetchProvider(
-  provider,
-  url
-) {
-
-  try {
-
-    const {
-      response,
-      text
-    } =
-      await fetchRSS(
-        url
-      );
-
-
-    if (
-      !response.ok
-    ) {
-
-      return {
-
-        provider,
-
-        ok: false,
-
-        status:
-          response.status,
-
-        items: [],
-
-        detail:
-          "HTTP " +
-          response.status
-
-      };
-
-    }
-
-
-    const items =
-      parseRSS(
-        text,
-        50
-      )
-        .map(
-          item => ({
-
-            title:
-              item.title ||
-              "",
-
-            link:
-              item.link ||
-              "",
-
-            description:
-              item.description ||
-              "",
-
-            published:
-              item.published ||
-              "",
-
-            guid:
-              item.guid ||
-              item.link ||
-              "",
-
-            source:
-              provider
-
-          })
-        )
-        .filter(
-          item =>
-            item.title ||
-            item.link
-        );
-
-
-    return {
-
-      provider,
-
-      ok: true,
-
-      status:
-        response.status,
-
-      items,
-
-      detail:
-        "RSS parsed: " +
-        items.length +
-        " items"
-
-    };
-
-
-  } catch (error) {
-
-    return {
-
-      provider,
-
-      ok: false,
-
-      status: 0,
-
-      items: [],
-
-      detail:
-        String(
-          error?.message ||
-          error
-        )
-
-    };
-
-  }
-}
-
-
-/* =========================================================
-   DEDUP
-   ========================================================= */
-
-function normalizeCompare(
-  value
-) {
-
-  return String(
-    value || ""
-  )
-    .toLowerCase()
-    .replace(
-      /https?:\/\//g,
-      ""
-    )
-    .replace(
-      /^www\./,
-      ""
-    )
-    .replace(
-      /[^\p{L}\p{N}]+/gu,
-      " "
-    )
-    .replace(
-      /\s+/g,
-      " "
-    )
-    .trim();
-}
-
-
-function dedupe(
-  items
-) {
-
-  const links =
-    new Set();
-
-  const titles =
+  const seen =
     new Set();
 
   const result =
@@ -1109,200 +785,126 @@ function dedupe(
     of items
   ) {
 
-    const link =
-      normalizeCompare(
-        item.link
+    const key =
+      normalizeText(
+        item.bseNewsId ||
+        item.link ||
+        (
+          item.title +
+          "|" +
+          item.published
+        )
       );
 
-    const title =
-      normalizeCompare(
-        item.title
-      );
+
+    if (!key) {
+
+      continue;
+
+    }
 
 
     if (
-      link &&
-      links.has(link)
+      seen.has(key)
     ) {
 
       continue;
+
     }
 
 
-    if (
-      title &&
-      titles.has(title)
-    ) {
+    seen.add(key);
 
-      continue;
-    }
-
-
-    if (link) {
-      links.add(link);
-    }
-
-
-    if (title) {
-      titles.add(title);
-    }
-
-
-    result.push(
-      item
-    );
+    result.push(item);
 
   }
 
 
   return result;
+
 }
 
 
 /* =========================================================
-   NEWS
+   BSE NEWS
    ========================================================= */
 
-async function getNews(
+async function fetchBSENews(
   keyword
 ) {
 
-  const providers = [
+  const now =
+    Date.now();
 
-    {
-      provider:
-        "GDELT News RSS",
 
-      url:
-        gdeltUrl(
-          keyword
-        )
-    },
+  const sixHoursAgo =
+    now -
+    6 * 60 * 60 * 1000;
 
-    {
-      provider:
-        "Bing News RSS",
 
-      url:
-        bingUrl(
-          keyword
-        )
-    },
+  /*
+   * We use today first.
+   *
+   * Yesterday is included only as a
+   * safety fallback for timezone/date
+   * boundary issues.
+   */
 
-    {
-      provider:
-        "Google News RSS",
-
-      url:
-        googleUrl(
-          keyword
-        )
-    }
-
+  const dates = [
+    bseDate(0),
+    bseDate(1)
   ];
 
 
-  const [
-    rssResults,
-    bseResult
-  ] =
-    await Promise.all([
-
-      Promise.all(
-        providers.map(
-          provider =>
-            fetchProvider(
-              provider.provider,
-              provider.url
-            )
-        )
-      ),
-
-      fetchBSENews(
-        keyword
-      )
-
-    ]);
-
-
-  const merged =
+  const attempts =
     [];
 
 
+  let allRows =
+    [];
+
+
+  /*
+   * Keep the first diagnostic version
+   * small.
+   *
+   * BSE pages are checked sequentially.
+   *
+   * This avoids creating 10 simultaneous
+   * BSE requests like the previous version.
+   */
+
+  const maxPagesPerDate =
+    5;
+
+
   for (
-    const result
-    of rssResults
+    const date
+    of dates
   ) {
 
-    if (
-      result.ok
+    let dateFound =
+      false;
+
+
+    for (
+      let page = 1;
+      page <= maxPagesPerDate;
+      page++
     ) {
 
-      merged.push(
-        ...result.items
-      );
-
-    }
-
-  }
-
-
-  if (
-    bseResult.ok
-  ) {
-
-    merged.push(
-      ...bseResult.items
-    );
-
-  }
-
-
-  const items =
-    dedupe(
-      merged
-    );
-
-
-  items.sort(
-    (a, b) => {
-
-      const da =
-        Date.parse(
-          a.published ||
-          ""
-        );
-
-      const db =
-        Date.parse(
-          b.published ||
-          ""
+      const result =
+        await fetchBSEPage(
+          date,
+          page
         );
 
 
-      if (
-        Number.isFinite(da) &&
-        Number.isFinite(db)
-      ) {
+      attempts.push({
 
-        return db - da;
+        date,
 
-      }
-
-
-      return 0;
-
-    }
-  );
-
-
-  const attempts = [
-
-    ...rssResults.map(
-      result => ({
-
-        provider:
-          result.provider,
+        page,
 
         ok:
           result.ok,
@@ -1313,43 +915,231 @@ async function getNews(
         count:
           result.items.length,
 
+        totalPages:
+          result.totalPages,
+
         detail:
           result.detail
 
-      })
-    ),
+      });
 
-    {
 
-      provider:
-        bseResult.provider,
+      if (
+        !result.ok
+      ) {
 
-      ok:
-        bseResult.ok,
+        /*
+         * If BSE failed for this page,
+         * move to next date.
+         */
 
-      status:
-        bseResult.attempts
-          ?.find(
-            x => x.status
-          )
-          ?.status || 0,
+        break;
 
-      count:
-        bseResult.count,
+      }
 
-      detail:
-        bseResult.attempts?.length
-          ? bseResult.attempts
-              .map(
-                x =>
-                  x.detail
-              )
-              .join(" | ")
-          : "No BSE response"
+
+      if (
+        result.items.length
+      ) {
+
+        dateFound = true;
+
+        allRows.push(
+          ...result.items
+        );
+
+      }
+
+
+      /*
+       * If this page is empty,
+       * there is no reason to continue.
+       */
+
+      if (
+        !result.items.length
+      ) {
+
+        break;
+
+      }
+
+
+      /*
+       * Stop when BSE says there are
+       * no more pages.
+       */
+
+      if (
+        result.totalPages > 0 &&
+        page >= result.totalPages
+      ) {
+
+        break;
+
+      }
 
     }
 
-  ];
+
+    /*
+     * We normally only need today.
+     *
+     * If today's pages produced records,
+     * don't unnecessarily query yesterday.
+     *
+     * Yesterday remains available as a
+     * fallback if today's request returned
+     * nothing.
+     */
+
+    if (
+      dateFound
+    ) {
+
+      break;
+
+    }
+
+  }
+
+
+  /*
+   * Normalize.
+   */
+
+  let items =
+    allRows
+      .map(
+        normalizeBSE
+      )
+      .filter(
+        item =>
+          item.title ||
+          item.link
+      );
+
+
+  /*
+   * TEMPORARY DIAGNOSTIC:
+   *
+   * Count how many records BSE returned
+   * before filtering.
+   */
+
+  const beforeTimeFilter =
+    items.length;
+
+
+  /*
+   * Filter to last 6 hours.
+   *
+   * IMPORTANT:
+   * If BSE date parsing fails for a record,
+   * it is NOT included in the 6-hour result.
+   */
+
+  items =
+    items.filter(
+      item => {
+
+        const time =
+          item.bseDateMs;
+
+
+        if (
+          !Number.isFinite(time)
+        ) {
+
+          return false;
+
+        }
+
+
+        return (
+          time >= sixHoursAgo &&
+          time <= now
+        );
+
+      }
+    );
+
+
+  const afterTimeFilter =
+    items.length;
+
+
+  /*
+   * Filter by requested company /
+   * keyword.
+   */
+
+  items =
+    items.filter(
+      item =>
+        bseMatches(
+          item,
+          keyword
+        )
+    );
+
+
+  const afterKeywordFilter =
+    items.length;
+
+
+  /*
+   * Remove duplicates.
+   */
+
+  items =
+    dedupe(
+      items
+    );
+
+
+  /*
+   * Newest first.
+   */
+
+  items.sort(
+    (a, b) =>
+      (
+        b.bseDateMs -
+        a.bseDateMs
+      )
+  );
+
+
+  /*
+   * HARD LIMIT.
+   */
+
+  items =
+    items.slice(
+      0,
+      20
+    );
+
+
+  /*
+   * Remove internal timestamp before
+   * sending response.
+   */
+
+  items =
+    items.map(
+      item => {
+
+        const copy =
+          { ...item };
+
+        delete copy.bseDateMs;
+
+        return copy;
+
+      }
+    );
 
 
   return {
@@ -1358,25 +1148,48 @@ async function getNews(
       items.length > 0,
 
     source:
-      "Google News RSS + GDELT + Bing News RSS + BSE",
+      "BSE Corporate Announcements",
 
     keyword,
+
+    timeWindow:
+      "last 6 hours",
 
     count:
       items.length,
 
     items,
 
-    attempts,
+    diagnostic: {
 
-    /*
-     * TEMPORARY BSE DEBUG DATA
-     */
+      fetchedRows:
+        allRows.length,
 
-    bseDebugRaw:
-      bseResult.debugRaw || []
+      beforeTimeFilter,
+
+      afterTimeFilter,
+
+      afterKeywordFilter,
+
+      finalCount:
+        items.length,
+
+      windowStart:
+        new Date(
+          sixHoursAgo
+        ).toISOString(),
+
+      windowEnd:
+        new Date(
+          now
+        ).toISOString(),
+
+      attempts
+
+    }
 
   };
+
 }
 
 
@@ -1387,6 +1200,10 @@ async function getNews(
 async function handle(
   request
 ) {
+
+  /*
+   * OPTIONS / CORS
+   */
 
   if (
     request.method ===
@@ -1409,6 +1226,7 @@ async function handle(
       request.url
     );
 
+
   const path =
     url.pathname;
 
@@ -1430,19 +1248,21 @@ async function handle(
         "MarketFeed RSS Proxy",
 
       version:
-        "11-multisource-bse-diagnostic",
+        "12-bse-only-6h",
 
       endpoints: [
-        "/rss?url=RSS_URL",
         "/news?q=KEYWORD"
       ],
 
-      keywordProviders: [
-        "Google News RSS",
-        "GDELT News RSS",
-        "Bing News RSS",
+      providers: [
         "BSE Corporate Announcements"
-      ]
+      ],
+
+      newsWindow:
+        "6 hours",
+
+      maxResults:
+        20
 
     });
 
@@ -1481,170 +1301,13 @@ async function handle(
     }
 
 
-    return json(
-      await getNews(
-        keyword
-      )
-    );
-
-  }
-
-
-  /* =======================================================
-     EXISTING RSS
-     ======================================================= */
-
-  if (
-    path === "/rss"
-  ) {
-
-    const target =
-      (
-        url.searchParams.get(
-          "url"
-        ) || ""
-      ).trim();
-
-
-    if (!target) {
-
-      return json(
-        {
-          ok: false,
-
-          error:
-            "Missing url parameter"
-
-        },
-        400
-      );
-
-    }
-
-
-    let targetURL;
-
-
     try {
 
-      targetURL =
-        new URL(
-          target
-        );
-
-
-      if (
-        ![
-          "http:",
-          "https:"
-        ].includes(
-          targetURL.protocol
+      return json(
+        await fetchBSENews(
+          keyword
         )
-      ) {
-
-        throw new Error(
-          "Only HTTP/HTTPS URLs are allowed"
-        );
-
-      }
-
-    } catch (_) {
-
-      return json(
-        {
-          ok: false,
-
-          error:
-            "Invalid RSS URL"
-
-        },
-        400
       );
-
-    }
-
-
-    try {
-
-      const {
-        response,
-        text
-      } =
-        await fetchRSS(
-          targetURL.toString()
-        );
-
-
-      if (
-        !response.ok
-      ) {
-
-        return json(
-          {
-            ok: false,
-
-            error:
-              "RSS source returned HTTP " +
-              response.status,
-
-            status:
-              response.status,
-
-            url:
-              targetURL.toString()
-
-          },
-          502
-        );
-
-      }
-
-
-      const items =
-        parseRSS(
-          text,
-          50
-        );
-
-
-      if (
-        !items.length
-      ) {
-
-        return json(
-          {
-            ok: false,
-
-            error:
-              "RSS/Atom feed returned no readable items",
-
-            url:
-              targetURL.toString()
-
-          },
-          502
-        );
-
-      }
-
-
-      return json({
-
-        ok: true,
-
-        source:
-          targetURL.hostname,
-
-        url:
-          targetURL.toString(),
-
-        count:
-          items.length,
-
-        items
-
-      });
-
 
     } catch (error) {
 
@@ -1652,17 +1315,19 @@ async function handle(
         {
           ok: false,
 
+          source:
+            "BSE Corporate Announcements",
+
+          keyword,
+
           error:
-            "RSS fetch failed",
+            "BSE news fetch failed",
 
           detail:
             String(
               error?.message ||
               error
-            ),
-
-          url:
-            targetURL.toString()
+            )
 
         },
         502
