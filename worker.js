@@ -915,7 +915,16 @@ async function fetchBSENews(
      */
 
     debugRaw:
-      allRows.slice(0, 3)
+  allRows.slice(0, 3).map(row => ({
+    SCRIP_CD: row.SCRIP_CD,
+    SLONGNAME: row.SLONGNAME,
+    NEWSSUB: row.NEWSSUB,
+    HEADLINE: row.HEADLINE,
+    NEWSID: row.NEWSID,
+    ATTACHMENTNAME: row.ATTACHMENTNAME,
+    NSURL: row.NSURL,
+    DissemDT: row.DissemDT
+  }))
 
   };
 }
